@@ -16,6 +16,7 @@ import BackgroundTasks
 @main
 struct PigeonApp: App {
     let sharedModelContainer: ModelContainer
+    let wallpaperManager = WallpaperManager()
     @State private var deepLinkTimelapseID: String?
     @Environment(\.scenePhase) private var scenePhase
     
@@ -26,6 +27,10 @@ struct PigeonApp: App {
         // The app only shows muted timelapse videos, so .ambient is correct.
         try? AVAudioSession.sharedInstance().setCategory(.ambient)
         try? AVAudioSession.sharedInstance().setActive(true)
+
+        #if DEBUG
+        UserRowDecoderTests.runAll()
+        #endif
 
         // Detect fresh install: UserDefaults is wiped on delete, but Keychain
         // may retain tokens. If our flag is missing, this is a new install —
@@ -95,12 +100,8 @@ struct PigeonApp: App {
         WindowGroup {
             ContentView(deepLinkTimelapseID: $deepLinkTimelapseID)
                 .environment(AuthService.shared)
-                .onTapGesture {
-                    UIApplication.shared.sendAction(
-                        #selector(UIResponder.resignFirstResponder),
-                        to: nil, from: nil, for: nil
-                    )
-                }
+                .environment(wallpaperManager)
+                .background(KeyboardDismissView())
                 .onAppear {
                     resetDataIfNeeded()
                 }
@@ -109,6 +110,14 @@ struct PigeonApp: App {
                     if url.scheme == "pigeon", url.host == "post",
                        let id = url.pathComponents.dropFirst().first {
                         deepLinkTimelapseID = id
+                        return
+                    }
+                    // Handle https://pigeonstudy.ing/nest?post=<uuid> universal links
+                    if let host = url.host(), host.hasSuffix("pigeonstudy.ing"),
+                       url.path() == "/nest",
+                       let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                       let postID = components.queryItems?.first(where: { $0.name == "post" })?.value {
+                        deepLinkTimelapseID = postID
                         return
                     }
                     // Fall through to Google Sign-In
@@ -179,6 +188,7 @@ struct PigeonApp: App {
             ("ZUSERPROFILE", "ZISPRIVATE", "INTEGER", "1"),
             ("ZSTUDYTIMELAPSE", "ZSYNCRETRYCOUNT", "INTEGER", "0"),
             ("ZSTUDYTIMELAPSE", "ZLASTSYNCATTEMPT", "TIMESTAMP", "NULL"),
+            ("ZSTUDYTIMELAPSE", "ZDESCRIPTIONRARITY", "VARCHAR", "NULL"),
         ]
         
         for patch in patches {
@@ -294,3 +304,20 @@ struct PigeonApp: App {
         }
     }
 }
+// MARK: - Keyboard Dismiss Helper
+
+/// A transparent UIView that installs a tap gesture to dismiss the keyboard
+/// without intercepting button taps. Uses `cancelsTouchesInView = false` so
+/// all interactive controls continue to work normally.
+private struct KeyboardDismissView: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let tap = UITapGestureRecognizer(target: view, action: #selector(UIView.endEditing(_:)))
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
+        return view
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
+

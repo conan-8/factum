@@ -20,19 +20,27 @@ private let pigeonDocumentsDirectory: URL = {
 enum PendingDeleteStore {
     private static let key = "pigeon_pending_deletes"
     
+    /// In-memory cache to avoid repeated UserDefaults reads.
+    private static var cached: Set<String>?
+    
     static func ids() -> Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        if let cached { return cached }
+        let loaded = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        cached = loaded
+        return loaded
     }
     
     static func add(_ id: UUID) {
         var current = ids()
         current.insert(id.uuidString)
+        cached = current
         UserDefaults.standard.set(Array(current), forKey: key)
     }
     
     static func remove(_ id: UUID) {
         var current = ids()
         current.remove(id.uuidString)
+        cached = current
         UserDefaults.standard.set(Array(current), forKey: key)
     }
     
@@ -58,7 +66,6 @@ final class UserProfile {
     var firebaseUID: String?       // Auth UID — primary cloud identifier
     var displayName: String
     var username: String?          // Unique @handle (lowercase, no @ stored)
-    var email: String
     var avatarURL: String?
     var bio: String
     var joinDate: Date
@@ -73,7 +80,6 @@ final class UserProfile {
 
     init(
         displayName: String,
-        email: String,
         firebaseUID: String? = nil,
         username: String? = nil,
         avatarURL: String? = nil,
@@ -84,7 +90,6 @@ final class UserProfile {
         self.firebaseUID = firebaseUID
         self.displayName = displayName
         self.username = username
-        self.email = email
         self.avatarURL = avatarURL
         self.bio = bio
         self.joinDate = Date()
@@ -126,6 +131,9 @@ final class StudyTimelapse {
     var cloudSynced: Bool = false    // true once successfully uploaded to Supabase
     var syncRetryCount: Int = 0      // number of failed sync attempts (for backoff)
     var lastSyncAttempt: Date?       // when the last sync attempt was made
+    var pigeonOrigin: String?        // Carrier Pigeon flight origin landmark
+    var pigeonDestination: String?   // Carrier Pigeon flight destination landmark
+    var descriptionRarity: String?   // PunRarity raw value (e.g. "legendary")
     
     /// Cache for decoded subject segments, invalidated when JSON changes.
     @Transient private var _cachedSegments: [SubjectSegment]?

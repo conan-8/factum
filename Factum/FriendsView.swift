@@ -21,6 +21,7 @@ struct FriendsView: View {
     @State private var isLoading = true
     @State private var searchTask: Task<Void, Never>?
     @State private var selectedFriend: UserRow?
+    @State private var appeared = false
     
     private var currentUser: UserProfile? {
         let uid = AuthService.shared.currentUserID
@@ -40,38 +41,18 @@ struct FriendsView: View {
                     Spacer()
                 }
                 .padding(.top, 8)
+                .staggeredAppear(index: 0, appeared: appeared)
                 
-                // Segmented picker
-                HStack(spacing: 0) {
-                    ForEach(0..<3, id: \.self) { index in
-                        Button {
-                            Haptics.selection()
-                            withAnimation(.easeInOut(duration: 0.2)) { selectedTab = index }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(tabTitles[index])
-                                    .font(PigeonTheme.subheadlineFont)
-                                    .foregroundStyle(selectedTab == index ? PigeonTheme.primaryText : PigeonTheme.tertiaryText)
-                                if index == 1 && !pendingRequests.isEmpty {
-                                    Text("\(pendingRequests.count)")
-                                        .font(PigeonTheme.smallFont)
-                                        .foregroundStyle(PigeonTheme.accentText)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(PigeonTheme.accent)
-                                        .clipShape(Capsule())
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(selectedTab == index ? PigeonTheme.accent : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
+                // Underline tab picker (Strava style)
+                PigeonUnderlinePicker(
+                    tabs: [0, 1, 2],
+                    selection: $selectedTab,
+                    label: { tabTitles[$0] },
+                    badge: { tab in
+                        tab == 1 && !pendingRequests.isEmpty ? pendingRequests.count : nil
                     }
-                }
-                .padding(4)
-                .background(PigeonTheme.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                )
+                .staggeredAppear(index: 1, appeared: appeared)
                 
                 // Content
                 switch selectedTab {
@@ -81,11 +62,14 @@ struct FriendsView: View {
                 default: EmptyView()
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
             .padding(.bottom, 100)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(PigeonTheme.background)
+        .pigeonWallpaper()
+        .onAppear { withAnimation { appeared = true } }
         .task { await loadFriendsData() }
         .sheet(item: $selectedFriend) { friend in
             FriendProfileView(
@@ -114,20 +98,21 @@ struct FriendsView: View {
     @ViewBuilder
     private var friendsListSection: some View {
         if friendProfiles.isEmpty && !isLoading {
-            VStack(spacing: 16) {
-                Spacer().frame(height: 40)
+            VStack(alignment: .leading, spacing: 12) {
+                Spacer().frame(height: 32)
                 Image("Pigeon2Icon")
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 60, height: 60)
+                    .frame(width: 48, height: 48)
                     .foregroundStyle(PigeonTheme.tertiaryText)
-                Text("No friends yet")
-                    .font(PigeonTheme.headlineFont)
+                Text("no flock yet")
+                    .font(.gloucester(size: 22))
                     .foregroundStyle(PigeonTheme.primaryText)
                 Text("Search for friends by @username")
                     .font(PigeonTheme.captionFont)
                     .foregroundStyle(PigeonTheme.tertiaryText)
+                    .padding(.bottom, 4)
                 Button {
                     selectedTab = 2
                 } label: {
@@ -137,9 +122,10 @@ struct FriendsView: View {
                         .padding(.horizontal, 24)
                         .padding(.vertical, 10)
                         .background(PigeonTheme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(OrganicRect(base: 10))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if isLoading {
             ProgressView()
                 .padding(.top, 40)
@@ -216,8 +202,7 @@ struct FriendsView: View {
             }
         }
         .padding(14)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .pigeonGlassSurface(cornerRadius: 14)
         .contextMenu {
             Button(role: .destructive) {
                 removeFriend(friend)
@@ -295,8 +280,7 @@ struct FriendsView: View {
             }
         }
         .padding(14)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .pigeonGlassSurface(cornerRadius: 14)
     }
     
     // MARK: - Search
@@ -321,11 +305,10 @@ struct FriendsView: View {
                 }
             }
             .padding(14)
-            .background(PigeonTheme.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .pigeonGlassSurface(cornerRadius: 12)
             
             if searchResults.isEmpty && !searchText.isEmpty && !isSearching {
-                Text("No users found")
+                Text("no pigeons spotted")
                     .font(PigeonTheme.captionFont)
                     .foregroundStyle(PigeonTheme.tertiaryText)
                     .padding(.top, 20)
@@ -397,8 +380,7 @@ struct FriendsView: View {
             }
         }
         .padding(14)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .pigeonGlassSurface(cornerRadius: 14)
     }
     
     // MARK: - Data Loading

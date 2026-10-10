@@ -19,7 +19,7 @@ extension Font {
 struct PigeonTheme {
     // MARK: - Colors (warm tinted — parchment light, inky dark)
     static let background = Color(light: Color(red: 0.98, green: 0.96, blue: 0.92), dark: Color(red: 0.06, green: 0.06, blue: 0.05))
-    static let cardBackground = Color(light: Color(red: 0.95, green: 0.92, blue: 0.87), dark: Color(red: 0.13, green: 0.12, blue: 0.11))
+    static let cardBackground = Color(light: Color(red: 0.91, green: 0.87, blue: 0.82), dark: Color(red: 0.13, green: 0.12, blue: 0.11))
     static let surfaceBackground = Color(light: Color(red: 0.92, green: 0.89, blue: 0.84), dark: Color(red: 0.09, green: 0.08, blue: 0.07))
     static let elevated = Color(light: Color(red: 0.93, green: 0.90, blue: 0.85), dark: Color(red: 0.19, green: 0.18, blue: 0.16))
     static let primaryText = Color(light: Color(red: 0.13, green: 0.10, blue: 0.08), dark: Color(red: 0.93, green: 0.91, blue: 0.88))
@@ -28,7 +28,7 @@ struct PigeonTheme {
     static let accent = Color(light: Color(red: 0.84, green: 0.79, blue: 0.72), dark: Color(red: 0.28, green: 0.26, blue: 0.23))
     /// Text on accent-colored backgrounds (buttons, selected segments)
     static let accentText = Color(light: Color(red: 0.13, green: 0.10, blue: 0.08), dark: Color(red: 0.93, green: 0.91, blue: 0.88))
-    static let separator = Color(light: Color(red: 0.86, green: 0.81, blue: 0.75), dark: Color(red: 0.22, green: 0.20, blue: 0.18))
+    static let separator = Color(light: Color(red: 0.80, green: 0.75, blue: 0.68), dark: Color(red: 0.22, green: 0.20, blue: 0.18))
     static let destructive = Color(red: 0.78, green: 0.28, blue: 0.24)
 
     // MARK: - Spacing Scale
@@ -102,6 +102,33 @@ struct OrganicRect: InsettableShape {
     }
 }
 
+// MARK: - Staggered Appear Animation
+
+/// Animates a view in with a fade + slide-up effect, staggered by index.
+struct StaggeredAppear: ViewModifier {
+    let index: Int
+    let appeared: Bool
+    var baseDelay: Double = 0.05
+    var slideDistance: CGFloat = 18
+    
+    func body(content: Content) -> some View {
+        content
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : slideDistance)
+            .animation(
+                .easeOut(duration: 0.4).delay(Double(index) * baseDelay),
+                value: appeared
+            )
+    }
+}
+
+extension View {
+    /// Fades and slides up when `appeared` becomes true, staggered by `index`.
+    func staggeredAppear(index: Int, appeared: Bool, baseDelay: Double = 0.05) -> some View {
+        modifier(StaggeredAppear(index: index, appeared: appeared, baseDelay: baseDelay))
+    }
+}
+
 // MARK: - Reusable Modifiers
 
 struct PigeonCardModifier: ViewModifier {
@@ -114,20 +141,100 @@ struct PigeonCardModifier: ViewModifier {
     }
 }
 
+/// A glass-aware background modifier for cards and surfaces.
+/// Uses Liquid Glass when a custom wallpaper is active, otherwise falls back to opaque cardBackground.
+struct PigeonGlassCardModifier: ViewModifier {
+    @Environment(WallpaperManager.self) private var wallpaperManager
+    var cornerRadius: CGFloat = PigeonTheme.cornerCard
+    
+    func body(content: Content) -> some View {
+        if wallpaperManager.hasCustomHomeWallpaper {
+            content
+                .padding(16)
+                .glassEffect(in: .rect(cornerRadius: cornerRadius))
+        } else {
+            content
+                .padding(16)
+                .background(PigeonTheme.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        }
+    }
+}
+
+/// A glass-aware modifier for post cards in the feed.
+/// No extra padding — the card handles its own internal layout.
+/// Uses a glass background effect when a custom wallpaper is active so that
+/// video layers (UIViewRepresentable) render correctly on top of the glass.
+struct PigeonGlassPostModifier: ViewModifier {
+    @Environment(WallpaperManager.self) private var wallpaperManager
+    var tint: Color? = nil
+
+    func body(content: Content) -> some View {
+        if wallpaperManager.hasCustomHomeWallpaper {
+            content
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: PigeonTheme.cornerCard)
+                            .fill(.clear)
+                            .glassEffect(in: .rect(cornerRadius: PigeonTheme.cornerCard))
+                        if let tint {
+                            RoundedRectangle(cornerRadius: PigeonTheme.cornerCard)
+                                .fill(tint.opacity(0.12))
+                        }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: PigeonTheme.cornerCard))
+                .shadow(color: PigeonTheme.cardShadow, radius: PigeonTheme.cardShadowRadius, x: 0, y: PigeonTheme.cardShadowY)
+        } else {
+            content
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: PigeonTheme.cornerCard)
+                            .fill(PigeonTheme.cardBackground)
+                        if let tint {
+                            RoundedRectangle(cornerRadius: PigeonTheme.cornerCard)
+                                .fill(tint.opacity(0.08))
+                        }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: PigeonTheme.cornerCard))
+                .shadow(color: PigeonTheme.cardShadow, radius: PigeonTheme.cardShadowRadius, x: 0, y: PigeonTheme.cardShadowY)
+        }
+    }
+}
+
+/// A glass-aware background modifier for smaller surface elements (rows, chips, bars).
+/// No padding added — caller handles its own padding.
+struct PigeonGlassSurfaceModifier: ViewModifier {
+    @Environment(WallpaperManager.self) private var wallpaperManager
+    var cornerRadius: CGFloat = 14
+    
+    func body(content: Content) -> some View {
+        if wallpaperManager.hasCustomHomeWallpaper {
+            content
+                .glassEffect(in: .rect(cornerRadius: cornerRadius))
+        } else {
+            content
+                .background(PigeonTheme.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        }
+    }
+}
+
 struct PigeonButtonStyle: ButtonStyle {
     var filled: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(PigeonTheme.subheadlineFont)
-            .foregroundStyle(filled ? PigeonTheme.accentText : PigeonTheme.primaryText)
+            .foregroundStyle(filled ? PigeonTheme.background : PigeonTheme.primaryText)
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
-            .background(filled ? PigeonTheme.accent : Color.clear)
+            .background(filled ? PigeonTheme.primaryText : Color.clear)
             .clipShape(OrganicRect(base: 10))
             .overlay(
                 OrganicRect(base: 10)
-                    .strokeBorder(PigeonTheme.accent, lineWidth: filled ? 0 : 1.5)
+                    .strokeBorder(filled ? Color.clear : PigeonTheme.separator, lineWidth: filled ? 0 : 1.5)
             )
             .opacity(configuration.isPressed ? 0.7 : 1.0)
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
@@ -140,6 +247,16 @@ extension View {
         modifier(PigeonCardModifier())
     }
     
+    /// Glass-aware card: uses Liquid Glass when custom wallpaper is active, opaque otherwise.
+    func pigeonGlassCard(cornerRadius: CGFloat = PigeonTheme.cornerCard) -> some View {
+        modifier(PigeonGlassCardModifier(cornerRadius: cornerRadius))
+    }
+    
+    /// Glass-aware surface (no built-in padding): uses Liquid Glass when custom wallpaper is active.
+    func pigeonGlassSurface(cornerRadius: CGFloat = 14) -> some View {
+        modifier(PigeonGlassSurfaceModifier(cornerRadius: cornerRadius))
+    }
+    
     func pigeonSectionTitle() -> some View {
         modifier(PigeonSectionTitleModifier())
     }
@@ -148,10 +265,183 @@ extension View {
 struct PigeonSectionTitleModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .font(PigeonTheme.sectionTitleFont)
+            .font(PigeonTheme.smallFont)
             .foregroundStyle(PigeonTheme.tertiaryText)
             .textCase(.uppercase)
-            .tracking(1)
+            .tracking(1.5)
+    }
+}
+
+// MARK: - Wrapping HStack (Flow Layout)
+
+/// A flow layout that wraps items horizontally, moving to the next line when space runs out.
+struct WrappingHStack<Item: Identifiable, Content: View>: View {
+    let items: [Item]
+    let spacing: CGFloat
+    let content: (Item) -> Content
+    
+    init(items: [Item], spacing: CGFloat = 8, @ViewBuilder content: @escaping (Item) -> Content) {
+        self.items = items
+        self.spacing = spacing
+        self.content = content
+    }
+    
+    @State private var totalHeight: CGFloat = .zero
+    
+    var body: some View {
+        GeometryReader { geometry in
+            generateContent(in: geometry)
+        }
+        .frame(height: totalHeight)
+    }
+    
+    private func generateContent(in geometry: GeometryProxy) -> some View {
+        var width = CGFloat.zero
+        var height = CGFloat.zero
+        
+        return ZStack(alignment: .topLeading) {
+            ForEach(items) { item in
+                content(item)
+                    .padding(.trailing, spacing)
+                    .padding(.bottom, spacing)
+                    .alignmentGuide(.leading) { d in
+                        if abs(width - d.width) > geometry.size.width {
+                            width = 0
+                            height -= d.height + spacing
+                        }
+                        let result = width
+                        if item.id == items.last?.id {
+                            width = 0
+                        } else {
+                            width -= d.width
+                        }
+                        return result
+                    }
+                    .alignmentGuide(.top) { _ in
+                        let result = height
+                        if item.id == items.last?.id {
+                            height = 0
+                        }
+                        return result
+                    }
+            }
+        }
+        .background(viewHeightReader($totalHeight))
+    }
+    
+    private func viewHeightReader(_ binding: Binding<CGFloat>) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: HeightPreferenceKey.self, value: geometry.size.height)
+        }
+        .onPreferenceChange(HeightPreferenceKey.self) { binding.wrappedValue = $0 }
+    }
+}
+
+private struct HeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+// MARK: - Strava-Style Underline Tab Picker
+
+/// A horizontal tab picker with an animated underline indicator (Strava style).
+struct PigeonUnderlinePicker<T: Hashable>: View {
+    let tabs: [T]
+    @Binding var selection: T
+    let label: (T) -> String
+    var badge: ((T) -> Int?)? = nil
+    @Namespace private var underlineNS
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(tabs, id: \.self) { tab in
+                Button {
+                    Haptics.selection()
+                    withAnimation(.easeInOut(duration: 0.25)) { selection = tab }
+                } label: {
+                    VStack(spacing: 8) {
+                        HStack(spacing: 5) {
+                            Text(label(tab))
+                                .font(PigeonTheme.subheadlineFont)
+                                .foregroundStyle(selection == tab ? PigeonTheme.primaryText : PigeonTheme.tertiaryText)
+                            if let badgeCount = badge?(tab), badgeCount > 0 {
+                                Text("\(badgeCount)")
+                                    .font(PigeonTheme.smallFont)
+                                    .foregroundStyle(PigeonTheme.background)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(PigeonTheme.primaryText)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        
+                        ZStack {
+                            Rectangle()
+                                .fill(Color.clear)
+                                .frame(height: 2)
+                            if selection == tab {
+                                Rectangle()
+                                    .fill(PigeonTheme.primaryText)
+                                    .frame(height: 2)
+                                    .matchedGeometryEffect(id: "underline", in: underlineNS)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        // Thin full-width separator behind the underline
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(PigeonTheme.separator)
+                .frame(height: 1)
+        }
+    }
+}
+
+// MARK: - Strava-Style Stat Value
+
+/// A large bold value with a small label underneath (Strava pattern).
+struct PigeonStatCell: View {
+    let value: String
+    let label: String
+    var valueSize: CGFloat = 22
+    
+    var body: some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.gloucester(size: valueSize))
+                .foregroundStyle(PigeonTheme.primaryText)
+            Text(label)
+                .font(PigeonTheme.smallFont)
+                .foregroundStyle(PigeonTheme.tertiaryText)
+        }
+    }
+}
+
+/// A horizontal row of stat cells separated by thin vertical dividers.
+struct PigeonStatRow: View {
+    @Environment(WallpaperManager.self) private var wallpaperManager
+    let stats: [(value: String, label: String)]
+    var valueSize: CGFloat = 22
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(stats.enumerated()), id: \.offset) { index, stat in
+                if index > 0 {
+                    Rectangle()
+                        .fill(PigeonTheme.separator)
+                        .frame(width: 1, height: 32)
+                }
+                PigeonStatCell(value: stat.value, label: stat.label, valueSize: valueSize)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.vertical, 16)
+        .pigeonGlassSurface(cornerRadius: PigeonTheme.cornerCard)
     }
 }
 
@@ -200,8 +490,8 @@ struct InstagramStickerView: View {
     var sessionDate: Date = Date()
     /// For animated GIF rendering: if set, shows elapsed time instead of total.
     var elapsedSeconds: Int? = nil
-    /// When false, sticker pills have no background fill.
-    var showBackground: Bool = true
+    /// Background style for this sticker (cycles on tap).
+    var backgroundMode: StickerBackgroundMode = .translucentDark
 
     private var formattedDuration: String {
         let h = durationSeconds / 3600
@@ -215,7 +505,11 @@ struct InstagramStickerView: View {
     private var hasMultipleSubjects: Bool { subjectSegments.count > 1 }
     private var hasCaption: Bool { !caption.isEmpty || !studyDescription.isEmpty }
 
-    private var pillBg: Color { showBackground ? Color.black.opacity(0.55) : Color.clear }
+    private var pillBg: Color { backgroundMode.background }
+    private var fg1: Color { backgroundMode.textPrimary }
+    private var fg2: Color { backgroundMode.textSecondary }
+    private var fg3: Color { backgroundMode.textTertiary }
+    private var dividerColor: Color { backgroundMode.divider }
     private let pillRadius: CGFloat = 14
     private let glassesSize: CGFloat = 10
     private let glassesOpacity: Double = 0.2
@@ -246,6 +540,7 @@ struct InstagramStickerView: View {
         case .notebook: notebookLayout
         case .receipt: receiptLayout
         case .stamp: stampLayout
+        case .liquidGlass: liquidGlassLayout
         case .custom: customLayout
         }
     }
@@ -271,31 +566,31 @@ struct InstagramStickerView: View {
                     if !caption.isEmpty {
                         Text(caption)
                             .font(.gloucester(size: 18))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(fg1)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
                     }
                     if !studyDescription.isEmpty {
                         Text(studyDescription)
                             .font(.gloucester(size: 13))
-                            .foregroundStyle(.white.opacity(0.5))
+                            .foregroundStyle(fg2)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
                     }
                 }
             }
 
-            Rectangle().fill(.white.opacity(0.12)).frame(height: 1).padding(.horizontal, 8)
+            Rectangle().fill(dividerColor).frame(height: 1).padding(.horizontal, 8)
 
             // Big time
             Text(formattedDuration)
                 .font(.gloucester(size: 39))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
             Text("studied")
                 .font(.gloucester(size: 15))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(fg3)
 
-            Rectangle().fill(.white.opacity(0.12)).frame(height: 1).padding(.horizontal, 8)
+            Rectangle().fill(dividerColor).frame(height: 1).padding(.horizontal, 8)
 
             // Subject(s)
             if hasMultipleSubjects {
@@ -305,11 +600,11 @@ struct InstagramStickerView: View {
                             Circle().fill(subjectColorResolver?(seg.subject) ?? subjectColor).frame(width: 7, height: 7)
                             Text(seg.subject)
                                 .font(.gloucester(size: 13))
-                                .foregroundStyle(.white.opacity(0.8))
+                                .foregroundStyle(fg2)
                             Spacer()
                             Text(formatSegmentTime(seg.seconds))
                                 .font(.gloucester(size: 13))
-                                .foregroundStyle(.white.opacity(0.4))
+                                .foregroundStyle(fg3)
                         }
                     }
                 }
@@ -318,7 +613,7 @@ struct InstagramStickerView: View {
                     Circle().fill(subjectColor).frame(width: 8, height: 8)
                     Text(subjectName)
                         .font(.gloucester(size: 16))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(fg2)
                 }
             }
 
@@ -326,17 +621,17 @@ struct InstagramStickerView: View {
             HStack(spacing: 5) {
                 Image(systemName: appLeaveCount == 0 ? "checkmark.circle.fill" : "iphone.and.arrow.forward")
                     .font(.system(size: 11))
-                    .foregroundStyle(appLeaveCount == 0 ? .green : .white.opacity(0.45))
+                    .foregroundStyle(appLeaveCount == 0 ? .green : fg3)
                 Text(focusText)
                     .font(.gloucester(size: 13))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(fg2)
             }
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 18)
         .frame(width: 240)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(8)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(8)
         }
         .background(RoundedRectangle(cornerRadius: 18).fill(pillBg))
     }
@@ -349,13 +644,13 @@ struct InstagramStickerView: View {
             VStack(spacing: 2) {
                 Text(formattedDuration)
                     .font(.gloucester(size: 22))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
                 Text("studied")
                     .font(.gloucester(size: 11))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(fg3)
             }
 
-            Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 28)
+            Rectangle().fill(dividerColor).frame(width: 1, height: 28)
 
             // Subject
             VStack(spacing: 2) {
@@ -363,24 +658,24 @@ struct InstagramStickerView: View {
                     Circle().fill(subjectColor).frame(width: 6, height: 6)
                     Text(subjectName)
                         .font(.gloucester(size: 15))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(fg2)
                         .lineLimit(1)
                 }
                 Text(focusText)
                     .font(.gloucester(size: 11))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(fg3)
                     .lineLimit(1)
             }
 
             if hasCaption {
-                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 28)
+                Rectangle().fill(dividerColor).frame(width: 1, height: 28)
                 Text(caption)
                     .font(.gloucester(size: 13))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(fg2)
                     .lineLimit(1)
             }
 
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity))
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity))
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
@@ -393,26 +688,26 @@ struct InstagramStickerView: View {
         VStack(spacing: 4) {
             Text(formattedDuration)
                 .font(.gloucester(size: 27))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
 
             HStack(spacing: 4) {
                 Circle().fill(subjectColor).frame(width: 6, height: 6)
                 Text(subjectName)
                     .font(.gloucester(size: 12))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(fg2)
                     .lineLimit(1)
             }
 
             HStack(spacing: 3) {
                 Image(systemName: appLeaveCount == 0 ? "checkmark.circle.fill" : "iphone.and.arrow.forward")
                     .font(.system(size: 8))
-                    .foregroundStyle(appLeaveCount == 0 ? .green : .white.opacity(0.4))
+                    .foregroundStyle(appLeaveCount == 0 ? .green : fg3)
                 Text(focusText)
                     .font(.gloucester(size: 11))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(fg2)
             }
 
-            PigeonIcon(size: 8, color: .white.opacity(glassesOpacity))
+            PigeonIcon(size: 8, color: fg1.opacity(glassesOpacity))
                 .padding(.top, 2)
         }
         .padding(.horizontal, 16)
@@ -426,19 +721,19 @@ struct InstagramStickerView: View {
         VStack(spacing: 6) {
             Text(formattedDuration)
                 .font(.gloucester(size: 43))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
 
             HStack(spacing: 5) {
                 Circle().fill(subjectColor).frame(width: 7, height: 7)
                 Text(subjectName)
                     .font(.gloucester(size: 17))
-                    .foregroundStyle(.white.opacity(0.65))
+                    .foregroundStyle(fg2)
             }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: 16).fill(pillBg))
     }
@@ -458,13 +753,13 @@ struct InstagramStickerView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 } else {
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(.white.opacity(0.03))
+                        .fill(fg1.opacity(0.03))
                         .frame(width: 220, height: 220)
                 }
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 2)
-                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                    .strokeBorder(dividerColor, lineWidth: 1)
             )
             .padding(.top, 14)
             .padding(.horizontal, 14)
@@ -474,23 +769,23 @@ struct InstagramStickerView: View {
                 if !caption.isEmpty {
                     Text(caption)
                         .font(.gloucester(size: 16))
-                        .foregroundStyle(.white.opacity(0.9))
+                        .foregroundStyle(fg1)
                         .lineLimit(1)
                 }
                 HStack(spacing: 10) {
                     HStack(spacing: 4) {
                         Image(systemName: "clock")
                             .font(.system(size: 10))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(fg3)
                         Text(formattedDuration)
                             .font(.gloucester(size: 13))
-                            .foregroundStyle(.white.opacity(0.7))
+                            .foregroundStyle(fg2)
                     }
                     HStack(spacing: 4) {
                         Circle().fill(subjectColor).frame(width: 5, height: 5)
                         Text(subjectName)
                             .font(.gloucester(size: 13))
-                            .foregroundStyle(.white.opacity(0.6))
+                            .foregroundStyle(fg2)
                             .lineLimit(1)
                     }
                 }
@@ -500,7 +795,7 @@ struct InstagramStickerView: View {
         }
         .frame(width: 248)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: 8, color: .white.opacity(0.15)).padding(8)
+            PigeonIcon(size: 8, color: fg1.opacity(0.15)).padding(8)
         }
         .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.6)))
     }
@@ -513,7 +808,7 @@ struct InstagramStickerView: View {
             VStack(spacing: 8) {
                 ForEach(0..<5, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 1.5)
-                        .fill(.white.opacity(0.15))
+                        .fill(dividerColor)
                         .frame(width: 6, height: 10)
                 }
             }
@@ -523,33 +818,33 @@ struct InstagramStickerView: View {
             VStack(spacing: 6) {
                 Text(formattedDuration)
                     .font(.gloucester(size: 29))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
                     .tracking(1)
 
-                Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
+                Rectangle().fill(dividerColor).frame(height: 1)
 
                 HStack(spacing: 4) {
                     Circle().fill(subjectColor).frame(width: 6, height: 6)
                     Text(subjectName)
                         .font(.gloucester(size: 13))
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(fg2)
                         .lineLimit(1)
                 }
 
                 if hasCaption {
                     Text(caption)
                         .font(.gloucester(size: 12))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(fg3)
                         .lineLimit(1)
                 }
 
                 HStack(spacing: 3) {
                     Image(systemName: appLeaveCount == 0 ? "checkmark.circle" : "exclamationmark.triangle")
                         .font(.system(size: 8))
-                        .foregroundStyle(appLeaveCount == 0 ? .green.opacity(0.7) : .white.opacity(0.4))
+                        .foregroundStyle(appLeaveCount == 0 ? .green.opacity(0.7) : fg3)
                     Text(focusText)
                         .font(.gloucester(size: 11))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(fg3)
                 }
             }
             .padding(.vertical, 10)
@@ -559,19 +854,19 @@ struct InstagramStickerView: View {
             VStack(spacing: 8) {
                 ForEach(0..<5, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 1.5)
-                        .fill(.white.opacity(0.15))
+                        .fill(dividerColor)
                         .frame(width: 6, height: 10)
                 }
             }
             .padding(.horizontal, 5)
         }
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: 8, color: .white.opacity(0.15)).padding(6)
+            PigeonIcon(size: 8, color: fg1.opacity(0.15)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: 3).fill(Color(red: 0.08, green: 0.07, blue: 0.06)))
         .overlay(
             RoundedRectangle(cornerRadius: 3)
-                .strokeBorder(.white.opacity(0.08), lineWidth: 1)
+                .strokeBorder(dividerColor, lineWidth: 1)
         )
     }
 
@@ -583,10 +878,10 @@ struct InstagramStickerView: View {
             HStack(spacing: 6) {
                 Text("STUDY LOG")
                     .font(.gloucester(size: 10))
-                    .foregroundStyle(.white.opacity(0.3))
+                    .foregroundStyle(fg3)
                     .tracking(2)
                 Spacer()
-                PigeonIcon(size: 8, color: .white.opacity(0.15))
+                PigeonIcon(size: 8, color: fg1.opacity(0.15))
             }
             .padding(.bottom, 8)
 
@@ -596,10 +891,10 @@ struct InstagramStickerView: View {
                     HStack(spacing: 6) {
                         Text(formattedDuration)
                             .font(.gloucester(size: 24))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(fg1)
                         Text("studied")
                             .font(.gloucester(size: 15))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(fg3)
                     }
                 }
 
@@ -608,7 +903,7 @@ struct InstagramStickerView: View {
                         Circle().fill(subjectColor).frame(width: 7, height: 7)
                         Text(subjectName)
                             .font(.gloucester(size: 15))
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(fg2)
                     }
                 }
 
@@ -620,11 +915,11 @@ struct InstagramStickerView: View {
                                     .foregroundStyle(subjectColorResolver?(seg.subject) ?? subjectColor)
                                 Text(seg.subject)
                                     .font(.gloucester(size: 12))
-                                    .foregroundStyle(.white.opacity(0.6))
+                                    .foregroundStyle(fg2)
                                 Spacer()
                                 Text(formatSegmentTime(seg.seconds))
                                     .font(.gloucester(size: 12))
-                                    .foregroundStyle(.white.opacity(0.35))
+                                    .foregroundStyle(fg3)
                             }
                         }
                     }
@@ -634,10 +929,10 @@ struct InstagramStickerView: View {
                     HStack(spacing: 4) {
                         Image(systemName: appLeaveCount == 0 ? "checkmark" : "arrow.right.square")
                             .font(.system(size: 9))
-                            .foregroundStyle(appLeaveCount == 0 ? .green.opacity(0.7) : .white.opacity(0.4))
+                            .foregroundStyle(appLeaveCount == 0 ? .green.opacity(0.7) : fg3)
                         Text(focusText)
                             .font(.gloucester(size: 12))
-                            .foregroundStyle(.white.opacity(0.5))
+                            .foregroundStyle(fg2)
                     }
                 }
 
@@ -646,7 +941,7 @@ struct InstagramStickerView: View {
                         Text("\"" + caption + "\"")
                             .font(.gloucester(size: 12))
                             .italic()
-                            .foregroundStyle(.white.opacity(0.45))
+                            .foregroundStyle(fg3)
                             .lineLimit(1)
                     }
                 }
@@ -673,7 +968,7 @@ struct InstagramStickerView: View {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .bottom) {
-                Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
+                Rectangle().fill(dividerColor).frame(height: 1)
             }
     }
 
@@ -683,16 +978,16 @@ struct InstagramStickerView: View {
         VStack(spacing: 0) {
             // Torn edge top
             ZigzagEdge()
-                .fill(.white.opacity(0.08))
+                .fill(dividerColor)
                 .frame(height: 6)
 
             VStack(spacing: 6) {
-                PigeonIcon(size: 14, color: .white.opacity(0.25))
+                PigeonIcon(size: 14, color: fg1.opacity(0.25))
                     .padding(.top, 4)
 
                 Text("STUDY RECEIPT")
                     .font(.gloucester(size: 10))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .foregroundStyle(fg3)
                     .tracking(3)
 
                 dottedLine
@@ -720,7 +1015,7 @@ struct InstagramStickerView: View {
 
                 Text("— thank you for studying —")
                     .font(.gloucester(size: 9))
-                    .foregroundStyle(.white.opacity(0.2))
+                    .foregroundStyle(fg3)
                     .padding(.bottom, 4)
             }
             .padding(.horizontal, 14)
@@ -728,7 +1023,7 @@ struct InstagramStickerView: View {
 
             // Torn edge bottom
             ZigzagEdge()
-                .fill(.white.opacity(0.08))
+                .fill(dividerColor)
                 .frame(height: 6)
                 .rotation3DEffect(.degrees(180), axis: (x: 1, y: 0, z: 0))
         }
@@ -740,12 +1035,12 @@ struct InstagramStickerView: View {
         HStack {
             Text(label)
                 .font(.gloucester(size: 11))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(fg3)
                 .lineLimit(1)
             Spacer()
             Text(value)
                 .font(.gloucester(size: 11))
-                .foregroundStyle(.white.opacity(bold ? 0.9 : 0.65))
+                .foregroundStyle(bold ? fg1 : fg2)
                 .lineLimit(1)
         }
     }
@@ -755,7 +1050,7 @@ struct InstagramStickerView: View {
             let dotCount = max(1, Int(geo.size.width / 4.5))
             HStack(spacing: 3) {
                 ForEach(0..<dotCount, id: \.self) { _ in
-                    Circle().fill(.white.opacity(0.12)).frame(width: 1.5, height: 1.5)
+                    Circle().fill(dividerColor).frame(width: 1.5, height: 1.5)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -770,19 +1065,19 @@ struct InstagramStickerView: View {
             // Value (time)
             Text(formattedDuration)
                 .font(.gloucester(size: 34))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
 
             // Subject
             HStack(spacing: 5) {
                 Circle().fill(subjectColor).frame(width: 7, height: 7)
                 Text(subjectName.uppercased())
                     .font(.gloucester(size: 11))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(fg2)
                     .tracking(1.5)
             }
 
             // Branding
-            PigeonIcon(size: 10, color: .white.opacity(0.2))
+            PigeonIcon(size: 10, color: fg1.opacity(0.2))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -794,13 +1089,92 @@ struct InstagramStickerView: View {
             // Perforated stamp border
             RoundedRectangle(cornerRadius: 4)
                 .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [3, 3]))
-                .foregroundStyle(.white.opacity(0.15))
+                .foregroundStyle(fg1.opacity(0.15))
         )
         .padding(4)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+                .strokeBorder(dividerColor, lineWidth: 0.5)
         )
+    }
+
+    // MARK: - Liquid Glass
+
+    private var liquidGlassLayout: some View {
+        VStack(spacing: 10) {
+            if hasCaption {
+                VStack(spacing: 4) {
+                    if !caption.isEmpty {
+                        Text(caption)
+                            .font(.gloucester(size: 18))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    if !studyDescription.isEmpty {
+                        Text(studyDescription)
+                            .font(.gloucester(size: 13))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                }
+            }
+
+            Rectangle().fill(.white.opacity(0.15)).frame(height: 1).padding(.horizontal, 8)
+
+            // Big time
+            Text(formattedDuration)
+                .font(.gloucester(size: 39))
+                .foregroundStyle(.white)
+            Text("studied")
+                .font(.gloucester(size: 15))
+                .foregroundStyle(.white.opacity(0.5))
+
+            Rectangle().fill(.white.opacity(0.15)).frame(height: 1).padding(.horizontal, 8)
+
+            // Subject(s)
+            if hasMultipleSubjects {
+                VStack(spacing: 5) {
+                    ForEach(subjectSegments) { seg in
+                        HStack(spacing: 6) {
+                            Circle().fill(subjectColorResolver?(seg.subject) ?? subjectColor).frame(width: 7, height: 7)
+                            Text(seg.subject)
+                                .font(.gloucester(size: 13))
+                                .foregroundStyle(.white.opacity(0.8))
+                            Spacer()
+                            Text(formatSegmentTime(seg.seconds))
+                                .font(.gloucester(size: 13))
+                                .foregroundStyle(.white.opacity(0.5))
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Circle().fill(subjectColor).frame(width: 8, height: 8)
+                    Text(subjectName)
+                        .font(.gloucester(size: 16))
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+            }
+
+            // Focus
+            HStack(spacing: 5) {
+                Image(systemName: appLeaveCount == 0 ? "checkmark.circle.fill" : "iphone.and.arrow.forward")
+                    .font(.system(size: 11))
+                    .foregroundStyle(appLeaveCount == 0 ? .green : .white.opacity(0.5))
+                Text(focusText)
+                    .font(.gloucester(size: 13))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 18)
+        .frame(width: 240)
+        .overlay(alignment: .bottomTrailing) {
+            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(8)
+        }
+        .glassEffect(in: .rect(cornerRadius: 18))
     }
 
     // MARK: - Custom (user-configurable)
@@ -853,7 +1227,7 @@ struct InstagramStickerView: View {
             if config.showDuration {
                 Text(formattedDuration)
                     .font(.system(size: config.durationSize(base: 28), weight: .bold, design: fontDesign))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
             }
         case 1: // Subject
             if config.showSubject {
@@ -864,11 +1238,11 @@ struct InstagramStickerView: View {
                                 Circle().fill(subjectColorResolver?(seg.subject) ?? subjectColor).frame(width: 7, height: 7)
                                 Text(seg.subject)
                                     .font(.system(size: config.labelSize(base: 11), weight: .regular, design: fontDesign))
-                                    .foregroundStyle(.white.opacity(0.8))
+                                    .foregroundStyle(fg2)
                                 Spacer()
                                 Text(formatSegmentTime(seg.seconds))
                                     .font(.system(size: config.labelSize(base: 11), weight: .regular, design: fontDesign))
-                                    .foregroundStyle(.white.opacity(0.4))
+                                    .foregroundStyle(fg3)
                             }
                         }
                     }
@@ -877,7 +1251,7 @@ struct InstagramStickerView: View {
                         Circle().fill(subjectColor).frame(width: 8, height: 8)
                         Text(subjectName)
                             .font(.system(size: config.labelSize(base: 13), weight: .regular, design: fontDesign))
-                            .foregroundStyle(.white.opacity(0.8))
+                            .foregroundStyle(fg2)
                     }
                 }
             }
@@ -888,23 +1262,23 @@ struct InstagramStickerView: View {
                 HStack(spacing: 5) {
                     Image(systemName: appLeaveCount == 0 ? "checkmark.circle.fill" : "iphone.and.arrow.forward")
                         .font(.system(size: config.labelSize(base: 11)))
-                        .foregroundStyle(appLeaveCount == 0 ? .green : .white.opacity(0.45))
+                        .foregroundStyle(appLeaveCount == 0 ? .green : fg3)
                     Text(focusText)
                         .font(.system(size: config.labelSize(base: 11), weight: .regular, design: fontDesign))
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(fg2)
                 }
             }
         case 4: // Caption
             if config.showCaption && hasCaption {
                 Text(caption)
                     .font(.system(size: config.labelSize(base: 11), weight: .regular, design: fontDesign))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(fg2)
                     .lineLimit(2)
                     .multilineTextAlignment(config.swiftUIMultilineAlignment)
             }
         case 5: // Branding
             if config.showBranding {
-                PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity))
+                PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity))
             }
         default:
             EmptyView()
@@ -948,13 +1322,13 @@ struct InstagramStickerView: View {
                 if !caption.isEmpty {
                     Text(caption)
                         .font(.gloucester(size: 18))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(fg1)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                 }
                 if !caption.isEmpty && !studyDescription.isEmpty {
                     Rectangle()
-                        .fill(.white.opacity(0.15))
+                        .fill(dividerColor)
                         .frame(height: 1)
                         .padding(.vertical, 8)
                         .padding(.horizontal, 12)
@@ -962,7 +1336,7 @@ struct InstagramStickerView: View {
                 if !studyDescription.isEmpty {
                     Text(studyDescription)
                         .font(.gloucester(size: 13))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(fg2)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                 }
@@ -971,7 +1345,7 @@ struct InstagramStickerView: View {
             .padding(.vertical, 12)
         }
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -980,18 +1354,18 @@ struct InstagramStickerView: View {
         HStack(spacing: 8) {
             Image(systemName: "clock")
                 .font(.system(size: 14))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(fg2)
             Text(formattedDuration)
                 .font(.gloucester(size: 34))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
             Text("studied")
                 .font(.gloucester(size: 16))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(fg2)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -1005,18 +1379,18 @@ struct InstagramStickerView: View {
                             Circle().fill(subjectColorResolver?(seg.subject) ?? subjectColor).frame(width: 8, height: 8)
                             Text(seg.subject)
                                 .font(.gloucester(size: 15))
-                                .foregroundStyle(.white.opacity(0.8))
+                                .foregroundStyle(fg2)
                             Spacer()
                             Text(formatSegmentTime(seg.seconds))
                                 .font(.gloucester(size: 15))
-                                .foregroundStyle(.white.opacity(0.45))
+                                .foregroundStyle(fg3)
                         }
                     }
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
                 .overlay(alignment: .bottomTrailing) {
-                    PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+                    PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
                 }
                 .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
             } else {
@@ -1024,12 +1398,12 @@ struct InstagramStickerView: View {
                     Circle().fill(subjectColor).frame(width: 9, height: 9)
                     Text(subjectName)
                         .font(.gloucester(size: 17))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(fg2)
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
                 .overlay(alignment: .bottomTrailing) {
-                    PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+                    PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
                 }
                 .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
             }
@@ -1040,15 +1414,15 @@ struct InstagramStickerView: View {
         HStack(spacing: 6) {
             Image(systemName: appLeaveCount == 0 ? "checkmark.circle.fill" : "iphone.and.arrow.forward")
                 .font(.system(size: 13))
-                .foregroundStyle(appLeaveCount == 0 ? .green : .white.opacity(0.55))
+                .foregroundStyle(appLeaveCount == 0 ? .green : fg2)
             Text(focusText)
                 .font(.gloucester(size: 16))
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(fg2)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -1059,24 +1433,24 @@ struct InstagramStickerView: View {
         HStack(spacing: 6) {
             Image(systemName: appLeaveCount == 0 ? "checkmark.circle.fill" : "iphone.and.arrow.forward")
                 .font(.system(size: 13))
-                .foregroundStyle(appLeaveCount == 0 ? .green : .white.opacity(0.55))
+                .foregroundStyle(appLeaveCount == 0 ? .green : fg2)
             if appLeaveCount == 0 {
                 Text("No leaves")
                     .font(.gloucester(size: 18))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(fg2)
             } else {
                 Text("\(appLeaveCount)")
                     .font(.gloucester(size: 29))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
                 Text(appLeaveCount == 1 ? "leave" : "leaves")
                     .font(.gloucester(size: 16))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(fg2)
             }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -1091,11 +1465,11 @@ struct InstagramStickerView: View {
                         Circle().fill(subjectColorResolver?(seg.subject) ?? subjectColor).frame(width: 8, height: 8)
                         Text(seg.subject)
                             .font(.gloucester(size: 15))
-                            .foregroundStyle(.white.opacity(0.8))
+                            .foregroundStyle(fg2)
                         Spacer()
                         Text(formatSegmentTime(seg.seconds))
                             .font(.gloucester(size: 15))
-                            .foregroundStyle(.white.opacity(0.45))
+                            .foregroundStyle(fg3)
                     }
                 }
             } else {
@@ -1103,18 +1477,18 @@ struct InstagramStickerView: View {
                     Circle().fill(subjectColor).frame(width: 8, height: 8)
                     Text(subjectName)
                         .font(.gloucester(size: 16))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(fg2)
                     Spacer()
                     Text(formattedDuration)
                         .font(.gloucester(size: 16))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(fg3)
                 }
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -1122,7 +1496,7 @@ struct InstagramStickerView: View {
     // MARK: - Branding pill (just the logo)
 
     private var brandingPill: some View {
-        PigeonIcon(size: 28, color: .white.opacity(0.7))
+        PigeonIcon(size: 28, color: fg2)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
@@ -1170,34 +1544,34 @@ struct InstagramStickerView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(formatClockTime(sessionStartTime))
                     .font(.gloucester(size: 22))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
                 Text("start")
                     .font(.gloucester(size: 11))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .foregroundStyle(fg3)
             }
 
             VStack(spacing: 2) {
                 Image(systemName: "arrow.right")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .foregroundStyle(fg3)
                 Text(formattedElapsed)
                     .font(.gloucester(size: 10))
-                    .foregroundStyle(.white.opacity(0.3))
+                    .foregroundStyle(fg3)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(formatClockTime(currentClockTime))
                     .font(.gloucester(size: 22))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
                 Text(elapsedSeconds != nil ? "now" : "end")
                     .font(.gloucester(size: 11))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .foregroundStyle(fg3)
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(6)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(6)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -1209,18 +1583,18 @@ struct InstagramStickerView: View {
             HStack {
                 Text(formattedElapsed)
                     .font(.gloucester(size: 13))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(fg1)
                 Spacer()
                 Text(formattedDuration)
                     .font(.gloucester(size: 13))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
             }
 
             // Progress bar
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(.white.opacity(0.1))
+                        .fill(dividerColor)
                         .frame(height: 6)
                     RoundedRectangle(cornerRadius: 3)
                         .fill(subjectColor)
@@ -1232,12 +1606,12 @@ struct InstagramStickerView: View {
             HStack(spacing: 4) {
                 Image(systemName: "clock.fill")
                     .font(.system(size: 9))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .foregroundStyle(fg3)
                 Text("\(formatClockTime(sessionStartTime)) — \(formatClockTime(currentClockTime))")
                     .font(.gloucester(size: 11))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .foregroundStyle(fg3)
                 Spacer()
-                PigeonIcon(size: 8, color: .white.opacity(0.15))
+                PigeonIcon(size: 8, color: fg1.opacity(0.15))
             }
         }
         .padding(.horizontal, 16)
@@ -1252,21 +1626,21 @@ struct InstagramStickerView: View {
         VStack(spacing: 4) {
             Text(formattedElapsed)
                 .font(.gloucester(size: 42))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
                 .monospacedDigit()
 
             HStack(spacing: 6) {
                 Circle().fill(subjectColor).frame(width: 6, height: 6)
                 Text(subjectName.uppercased())
                     .font(.gloucester(size: 12))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(fg2)
                     .tracking(2)
             }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(8)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(8)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -1277,7 +1651,7 @@ struct InstagramStickerView: View {
         ZStack {
             // Background ring
             Circle()
-                .stroke(.white.opacity(0.1), lineWidth: 5)
+                .stroke(fg3.opacity(0.25), lineWidth: 5)
                 .frame(width: 90, height: 90)
             // Progress ring
             Circle()
@@ -1290,17 +1664,17 @@ struct InstagramStickerView: View {
             VStack(spacing: 2) {
                 Text(formattedElapsed)
                     .font(.gloucester(size: 16))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg1)
                     .monospacedDigit()
                 Text(subjectName)
                     .font(.gloucester(size: 9))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(fg2)
                     .lineLimit(1)
             }
         }
         .frame(width: 110, height: 110)
         .overlay(alignment: .bottom) {
-            PigeonIcon(size: 8, color: .white.opacity(0.15)).padding(.bottom, 4)
+            PigeonIcon(size: 8, color: fg1.opacity(0.15)).padding(.bottom, 4)
         }
         .background(RoundedRectangle(cornerRadius: 20).fill(pillBg).frame(width: 110, height: 110))
     }
@@ -1316,19 +1690,19 @@ struct InstagramStickerView: View {
 
             Text(formattedElapsed)
                 .font(.gloucester(size: 20))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
                 .monospacedDigit()
 
             Rectangle()
-                .fill(.white.opacity(0.15))
+                .fill(dividerColor)
                 .frame(width: 1, height: 18)
 
             Text(subjectName)
                 .font(.gloucester(size: 14))
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(fg2)
                 .lineLimit(1)
 
-            PigeonIcon(size: 8, color: .white.opacity(0.2))
+            PigeonIcon(size: 8, color: fg1.opacity(0.2))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -1341,19 +1715,19 @@ struct InstagramStickerView: View {
         VStack(spacing: 2) {
             Text(formatClockTime(currentClockTime))
                 .font(.gloucester(size: 52))
-                .foregroundStyle(.white)
+                .foregroundStyle(fg1)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
 
             Text(formatClockDate(currentClockTime))
                 .font(.gloucester(size: 13))
-                .foregroundStyle(.white.opacity(0.35))
+                .foregroundStyle(fg3)
                 .tracking(1)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: glassesSize, color: .white.opacity(glassesOpacity)).padding(8)
+            PigeonIcon(size: glassesSize, color: fg1.opacity(glassesOpacity)).padding(8)
         }
         .background(RoundedRectangle(cornerRadius: pillRadius).fill(pillBg))
     }
@@ -1372,10 +1746,10 @@ struct InstagramStickerView: View {
                 HStack(spacing: 6) {
                     Text(formattedDuration)
                         .font(.gloucester(size: 24))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(fg1)
                     Text("studied")
                         .font(.gloucester(size: 15))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(fg3)
                 }
             }
 
@@ -1384,7 +1758,7 @@ struct InstagramStickerView: View {
                     Circle().fill(subjectColor).frame(width: 7, height: 7)
                     Text(subjectName)
                         .font(.gloucester(size: 15))
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(fg2)
                 }
             }
 
@@ -1396,11 +1770,11 @@ struct InstagramStickerView: View {
                                 .foregroundStyle(subjectColorResolver?(seg.subject) ?? subjectColor)
                             Text(seg.subject)
                                 .font(.gloucester(size: 12))
-                                .foregroundStyle(.white.opacity(0.6))
+                                .foregroundStyle(fg2)
                             Spacer()
                             Text(formatSegmentTime(seg.seconds))
                                 .font(.gloucester(size: 12))
-                                .foregroundStyle(.white.opacity(0.35))
+                                .foregroundStyle(fg3)
                         }
                     }
                 }
@@ -1410,10 +1784,10 @@ struct InstagramStickerView: View {
                 HStack(spacing: 4) {
                     Image(systemName: appLeaveCount == 0 ? "checkmark" : "arrow.right.square")
                         .font(.system(size: 9))
-                        .foregroundStyle(appLeaveCount == 0 ? .green.opacity(0.7) : .white.opacity(0.4))
+                        .foregroundStyle(appLeaveCount == 0 ? .green.opacity(0.7) : fg3)
                     Text(focusText)
                         .font(.gloucester(size: 12))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(fg2)
                 }
             }
 
@@ -1422,7 +1796,7 @@ struct InstagramStickerView: View {
                     Text("\"" + caption + "\"")
                         .font(.gloucester(size: 12))
                         .italic()
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(fg3)
                         .lineLimit(1)
                 }
             }
@@ -1430,7 +1804,7 @@ struct InstagramStickerView: View {
         .padding(14)
         .frame(width: 220)
         .overlay(alignment: .bottomTrailing) {
-            PigeonIcon(size: 8, color: .white.opacity(0.15)).padding(8)
+            PigeonIcon(size: 8, color: fg1.opacity(0.15)).padding(8)
         }
         .background(
             ZStack(alignment: .leading) {
@@ -1506,6 +1880,8 @@ enum StickerLayout: String, CaseIterable, Identifiable {
     case notebook = "Notes"
     case receipt = "Receipt"
     case stamp = "Stamp"
+    // Liquid Glass
+    case liquidGlass = "Glass"
     // Custom (user-configured)
     case custom = "Custom"
 
@@ -2467,12 +2843,63 @@ struct SavedStoryTemplate: Codable, Identifiable {
     }
 }
 
+/// Background style for stickers on the canvas. Tap a selected sticker to cycle.
+enum StickerBackgroundMode: Int, CaseIterable {
+    case translucentDark  = 0   // white text, black 55% bg (default)
+    case solidDark        = 1   // white text, solid black bg
+    case noBgLight        = 2   // white text, no background
+    case translucentLight = 3   // black text, white 55% bg
+    case solidLight       = 4   // black text, solid white bg
+    case noBgDark         = 5   // black text, no background
+
+    var label: String {
+        switch self {
+        case .translucentDark:  return "Dark Glass"
+        case .solidDark:        return "Dark Solid"
+        case .noBgLight:        return "No BG (Light)"
+        case .translucentLight: return "Light Glass"
+        case .solidLight:       return "Light Solid"
+        case .noBgDark:         return "No BG (Dark)"
+        }
+    }
+
+    var background: Color {
+        switch self {
+        case .translucentDark:  return Color.black.opacity(0.55)
+        case .solidDark:        return Color.black
+        case .noBgLight:        return Color.clear
+        case .translucentLight: return Color.white.opacity(0.55)
+        case .solidLight:       return Color.white
+        case .noBgDark:         return Color.clear
+        }
+    }
+
+    var textPrimary: Color {
+        switch self {
+        case .translucentDark, .solidDark, .noBgLight:
+            return .white
+        case .translucentLight, .solidLight, .noBgDark:
+            return .black
+        }
+    }
+
+    var textSecondary: Color { textPrimary.opacity(0.6) }
+    var textTertiary: Color { textPrimary.opacity(0.4) }
+    var divider: Color { textPrimary.opacity(0.12) }
+
+    func next() -> StickerBackgroundMode {
+        let all = Self.allCases
+        let idx = (rawValue + 1) % all.count
+        return all[idx]
+    }
+}
+
 struct CanvasStickerItem: Identifiable {
     let id = UUID()
     var layout: StickerLayout
     var position: CGPoint       // center position in canvas coords (360x640)
     var scale: CGFloat = 1.0
-    var showBackground: Bool = true
+    var backgroundMode: StickerBackgroundMode = .translucentDark
 }
 
 /// Approximates CIFilter color grading with SwiftUI modifiers for live preview.
@@ -2561,6 +2988,8 @@ struct StickerCanvasView: View {
     @State private var composedVideoURL: URL? = nil
     @State private var showVideoEditor = false
     @State private var selectedColorGrade: VideoColorGrade = .none
+    @State private var modeLabel: String = ""
+    @State private var showModeLabel = false
 
     private enum StickerPickerTab: String, CaseIterable {
         case templates = "Templates"
@@ -2578,6 +3007,11 @@ struct StickerCanvasView: View {
     }
 
     private let storyTemplates: [StoryTemplate] = [
+        // Liquid Glass
+        StoryTemplate(name: "Liquid Glass", icon: "drop.fill", items: [
+            (.liquidGlass, CGPoint(x: 180, y: 300), 1.0),
+            (.branding, CGPoint(x: 180, y: 560), 0.8),
+        ]),
         // Animated templates first
         StoryTemplate(name: "Timer Story", icon: "timer", items: [
             (.progressRing, CGPoint(x: 180, y: 180), 1.0),
@@ -2641,7 +3075,7 @@ struct StickerCanvasView: View {
 
     private let elementLayouts: [StickerLayout] = [.timeOnly, .subjectOnly, .captionOnly, .focusOnly, .appLeaves, .breakdown, .branding]
     private let animatedElementLayouts: [StickerLayout] = [.progressTimer, .timeRange, .countingTimer, .progressRing, .liveTicker, .wallClock]
-    private let presetLayouts: [StickerLayout] = [.stack, .card, .bar, .badge, .minimal, .polaroid, .filmStrip, .notebook, .notesClean, .receipt, .stamp, .custom]
+    private let presetLayouts: [StickerLayout] = [.liquidGlass, .stack, .card, .bar, .badge, .minimal, .polaroid, .filmStrip, .notebook, .notesClean, .receipt, .stamp, .custom]
 
     private func addSticker(_ layout: StickerLayout) {
         let offsetX = CGFloat.random(in: -20...20)
@@ -2676,7 +3110,7 @@ struct StickerCanvasView: View {
             baseW = 140; baseH = 50
         case .progressRing:
             baseW = 100; baseH = 100
-        case .stack, .card, .notesClean, .notebook, .polaroid:
+        case .stack, .card, .notesClean, .notebook, .polaroid, .liquidGlass:
             baseW = 160; baseH = 130
         case .bar, .minimal:
             baseW = 180; baseH = 40
@@ -2963,11 +3397,16 @@ struct StickerCanvasView: View {
                     }
                     if let id = bestID, bestDist < 80 * scale {
                         if selectedItemID == id {
-                            // Tap again on selected sticker → toggle background
+                            // Tap again on selected sticker → cycle background mode
                             if let idx = items.firstIndex(where: { $0.id == id }) {
                                 Haptics.selection()
                                 withAnimation(.easeInOut(duration: 0.15)) {
-                                    items[idx].showBackground.toggle()
+                                    items[idx].backgroundMode = items[idx].backgroundMode.next()
+                                }
+                                modeLabel = items[idx].backgroundMode.label
+                                withAnimation(.easeInOut(duration: 0.2)) { showModeLabel = true }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                    withAnimation(.easeOut(duration: 0.3)) { showModeLabel = false }
                                 }
                             }
                         } else {
@@ -2980,6 +3419,18 @@ struct StickerCanvasView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .overlay(alignment: .top) {
+                if showModeLabel {
+                    Text(modeLabel)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(.black.opacity(0.65)))
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .padding(.top, 10)
+                }
             }
             .padding(.horizontal, 8)
 
@@ -3173,6 +3624,7 @@ struct StickerCanvasView: View {
         case .notebook: return 0.48
         case .receipt: return 0.50
         case .stamp: return 0.60
+        case .liquidGlass: return 0.48
         case .custom: return 0.50
         }
     }
@@ -3500,7 +3952,7 @@ struct StickerCanvasView: View {
             layout: item.layout,
             thumbnailData: thumbnailData,
             sessionDate: sessionDate,
-            showBackground: item.showBackground
+            backgroundMode: item.backgroundMode
         )
     }
 
@@ -3518,7 +3970,7 @@ struct StickerCanvasView: View {
             thumbnailData: thumbnailData,
             sessionDate: sessionDate,
             elapsedSeconds: elapsedSeconds,
-            showBackground: item.showBackground
+            backgroundMode: item.backgroundMode
         )
     }
 
@@ -3948,6 +4400,7 @@ struct InstagramStoryStyleSheet: View {
         case .notebook: return 0.34
         case .receipt: return 0.36
         case .stamp: return 0.45
+        case .liquidGlass: return 0.34
         case .custom: return 0.36
         }
     }
@@ -4575,5 +5028,26 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+/// Applies the user's wallpaper as a full-bleed background behind the content.
+/// Use this on each tab view's outermost body so the wallpaper renders inside
+/// the NavigationStack rather than behind UIKit hosting views.
+struct WallpaperBackgroundModifier: ViewModifier {
+    @Environment(WallpaperManager.self) private var wallpaperManager
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                WallpaperBackgroundView(config: wallpaperManager.homeConfig)
+            }
+    }
+}
+
+extension View {
+    /// Adds the user's home wallpaper as a full-bleed background behind this view.
+    func pigeonWallpaper() -> some View {
+        self.modifier(WallpaperBackgroundModifier())
+    }
 }
 

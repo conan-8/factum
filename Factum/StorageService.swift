@@ -7,16 +7,21 @@
 
 import Foundation
 import UIKit
+import AVFoundation
 import Supabase
 
 final class StorageService: Sendable {
     static let shared = StorageService()
+    
+    /// Maximum file size for Supabase Storage uploads (50 MB).
+    private let maxUploadBytes = 50 * 1024 * 1024
     
     private init() {}
     
     // MARK: - Video Upload
     
     /// Upload a timelapse video to Supabase Storage.
+    /// If the file exceeds 50 MB, it is re-compressed to a smaller size first.
     /// Returns the public URL string.
     func uploadVideo(localURL: URL, userUID: String, timelapseID: String, onProgress: ((Double) -> Void)? = nil) async throws -> String {
         // Verify the file exists before attempting upload
@@ -28,7 +33,23 @@ final class StorageService: Sendable {
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int) ?? 0
         print("[SYNC] Video file size: \(fileSize / 1024)KB at path: \(localURL.lastPathComponent)")
         
-        let videoData = try Data(contentsOf: localURL)
+        // Re-compress if the video exceeds the storage limit
+        let uploadURL: URL
+        if fileSize > maxUploadBytes {
+            print("[SYNC] Video exceeds \(maxUploadBytes / 1024 / 1024)MB limit — re-compressing...")
+            if let compressed = try await compressVideo(at: localURL) {
+                let compressedSize = (try? FileManager.default.attributesOfItem(atPath: compressed.path)[.size] as? Int) ?? 0
+                print("[SYNC] Re-compressed: \(fileSize / 1024)KB → \(compressedSize / 1024)KB")
+                uploadURL = compressed
+            } else {
+                print("[SYNC] Re-compression failed — uploading original")
+                uploadURL = localURL
+            }
+        } else {
+            uploadURL = localURL
+        }
+        
+        let videoData = try Data(contentsOf: uploadURL)
         let path = "\(userUID)/\(timelapseID).mp4"
         
         print("[SYNC] Uploading video: bucket=timelapses, path=\(path), size=\(videoData.count / 1024)KB, userUID=\(userUID.prefix(8))...")
@@ -42,15 +63,43 @@ final class StorageService: Sendable {
         } catch {
             print("[SYNC] ❌ Storage upload error: \(error)")
             print("[SYNC] ❌ Error type: \(type(of: error))")
-            if let storageError = error as? StorageError {
-                print("[SYNC] ❌ StorageError: \(storageError.errorDescription ?? "unknown")")
-            }
             throw error
+        }
+        
+        // Clean up temporary compressed file
+        if uploadURL != localURL {
+            try? FileManager.default.removeItem(at: uploadURL)
         }
         
         let publicURL = try supabase.storage.from("timelapses").getPublicURL(path: path)
         print("[SYNC] ✅ Video public URL: \(publicURL.absoluteString)")
         return publicURL.absoluteString
+    }
+    
+    /// Re-encode a video at medium quality to reduce file size below the upload limit.
+    private func compressVideo(at sourceURL: URL) async throws -> URL? {
+        let asset = AVURLAsset(url: sourceURL)
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("compressed_\(UUID().uuidString).mp4")
+        
+        guard let exportSession = AVAssetExportSession(
+            asset: asset, presetName: AVAssetExportPresetMediumQuality
+        ) else {
+            return nil
+        }
+        
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+        
+        await exportSession.export()
+        
+        guard exportSession.status == .completed else {
+            print("[SYNC] Re-compression export failed: \(exportSession.error?.localizedDescription ?? "unknown")")
+            return nil
+        }
+        
+        return outputURL
     }
     
     // MARK: - Thumbnail Upload
@@ -111,6 +160,22 @@ final class StorageService: Sendable {
         )
         
         let publicURL = try supabase.storage.from("avatars").getPublicURL(path: path)
+        return publicURL.absoluteString
+    }
+    
+    // MARK: - Wallpaper Upload
+    
+    /// Upload a group wallpaper image to Supabase Storage.
+    func uploadWallpaper(data: Data, groupID: String) async throws -> String {
+        let path = "groups/\(groupID).jpg"
+        
+        try await supabase.storage.from("wallpapers").upload(
+            path,
+            data: data,
+            options: FileOptions(contentType: "image/jpeg", upsert: true)
+        )
+        
+        let publicURL = try supabase.storage.from("wallpapers").getPublicURL(path: path)
         return publicURL.absoluteString
     }
     

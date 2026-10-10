@@ -18,6 +18,9 @@ struct PostCaptionView: View {
     var subjectSegments: [SubjectSegment] = []
     var appLeaveCount: Int = 0
     var offTaskSeconds: Int = 0
+    var pigeonOrigin: String? = nil
+    var pigeonDestination: String? = nil
+    @Binding var hasUsedPunReroll: Bool
     let onComplete: () -> Void
     var onDiscard: (() -> Void)? = nil
     
@@ -35,6 +38,14 @@ struct PostCaptionView: View {
     @State private var showVideoEditor = false
     @State private var editedVideoURL: URL? = nil
     @FocusState private var focusedField: Field?
+    @State private var lastPunIndex: Int = -1
+    @State private var rolledRarity: PunRarity? = nil
+    /// Local alias — driven by the parent's binding so the roll persists across Back/End cycles
+    private var hasRolledPun: Bool { hasUsedPunReroll }
+    @State private var punButtonScale: CGFloat = 1.0
+    @State private var punGlowOpacity: Double = 0.0
+    @State private var showScreenFlash = false
+    
     @Query private var users: [UserProfile]
     @Query(sort: \StudySubject.sortOrder) private var subjects: [StudySubject]
     
@@ -172,9 +183,44 @@ struct PostCaptionView: View {
                     
                     // Description
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Description")
-                            .font(PigeonTheme.subheadlineFont)
-                            .foregroundStyle(PigeonTheme.primaryText)
+                        HStack {
+                            Text("Description")
+                                .font(PigeonTheme.subheadlineFont)
+                                .foregroundStyle(PigeonTheme.primaryText)
+                            
+                            Spacer()
+                            
+                            Button {
+                                let result = PigeonPunLibrary.rollPun(excluding: lastPunIndex)
+                                lastPunIndex = result.index
+                                studyDescription = result.pun.text
+                                hasUsedPunReroll = true
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    rolledRarity = result.pun.rarity
+                                }
+                                playRarityAnimation(result.pun.rarity)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: hasRolledPun ? "bird.fill" : "bird")
+                                        .font(.system(size: 12))
+                                    Text(hasRolledPun ? "rolled" : "pun me")
+                                        .font(PigeonTheme.captionFont)
+                                }
+                                .foregroundStyle(hasRolledPun ? (rolledRarity?.color ?? PigeonTheme.tertiaryText).opacity(0.5) : (rolledRarity?.color ?? PigeonTheme.accent))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background((rolledRarity?.color ?? PigeonTheme.accent).opacity(hasRolledPun ? 0.06 : 0.12))
+                                .clipShape(Capsule())
+                                .scaleEffect(punButtonScale)
+                                .overlay(
+                                    Capsule()
+                                        .stroke(rolledRarity?.color ?? .clear, lineWidth: rolledRarity != nil && rolledRarity != .common ? 1 : 0)
+                                        .opacity(punGlowOpacity)
+                                        .scaleEffect(punButtonScale)
+                                )
+                            }
+                            .disabled(hasRolledPun)
+                        }
                         
                         ZStack(alignment: .topLeading) {
                             TextEditor(text: $studyDescription)
@@ -196,6 +242,22 @@ struct PostCaptionView: View {
                                     .padding(.vertical, 16)
                                     .allowsHitTesting(false)
                             }
+                        }
+                        
+                        if let rarity = rolledRarity, rarity != .common {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(rarity.color)
+                                    .frame(width: 6, height: 6)
+                                Text(rarity.displayName)
+                                    .font(PigeonTheme.smallFont)
+                                    .foregroundStyle(rarity.color)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(rarity.color.opacity(0.1))
+                            .clipShape(Capsule())
+                            .transition(.scale.combined(with: .opacity))
                         }
                     }
                     
@@ -244,6 +306,15 @@ struct PostCaptionView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .onTapGesture { focusedField = nil }
+            .overlay {
+                if showScreenFlash {
+                    Color.white
+                        .opacity(0.7)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
             .background(PigeonTheme.background)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -344,6 +415,8 @@ struct PostCaptionView: View {
         )
         timelapse.appLeaveCount = appLeaveCount
         timelapse.offTaskSeconds = offTaskSeconds
+        timelapse.pigeonOrigin = pigeonOrigin
+        timelapse.pigeonDestination = pigeonDestination
         if subjectSegments.count > 1 {
             timelapse.subjectSegments = subjectSegments
         }
@@ -430,6 +503,9 @@ struct PostCaptionView: View {
         timelapse.afterPhotoData = afterData
         timelapse.appLeaveCount = appLeaveCount
         timelapse.offTaskSeconds = offTaskSeconds
+        timelapse.pigeonOrigin = pigeonOrigin
+        timelapse.pigeonDestination = pigeonDestination
+        timelapse.descriptionRarity = rolledRarity?.rawValue
         if subjectSegments.count > 1 {
             timelapse.subjectSegments = subjectSegments
         }
@@ -492,6 +568,91 @@ struct PostCaptionView: View {
         }
         
         onComplete()
+    }
+    
+    private func playRarityAnimation(_ rarity: PunRarity) {
+        // Reset
+        punButtonScale = 1.0
+        punGlowOpacity = 0.0
+        showScreenFlash = false
+        
+        switch rarity {
+        case .common:
+            break
+            
+        case .uncommon:
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) {
+                punButtonScale = 1.15
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.spring(response: 0.2)) { punButtonScale = 1.0 }
+            }
+            Haptics.light()
+            
+        case .rare:
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.4)) {
+                punButtonScale = 1.2
+                punGlowOpacity = 1.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                withAnimation(.easeOut(duration: 0.5)) {
+                    punButtonScale = 1.0
+                    punGlowOpacity = 0.0
+                }
+            }
+            Haptics.medium()
+            
+        case .epic:
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.35)) {
+                punButtonScale = 1.25
+                punGlowOpacity = 1.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.easeInOut(duration: 0.6)) {
+                    punButtonScale = 1.0
+                    punGlowOpacity = 0.0
+                }
+            }
+            Haptics.medium()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { Haptics.light() }
+            
+        case .legendary:
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.3)) {
+                punButtonScale = 1.35
+                punGlowOpacity = 1.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.5)) {
+                    punButtonScale = 1.0
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                withAnimation(.easeOut(duration: 0.4)) { punGlowOpacity = 0.0 }
+            }
+            Haptics.heavy()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { Haptics.success() }
+            
+        case .mythic:
+            withAnimation(.easeIn(duration: 0.1)) { showScreenFlash = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                withAnimation(.easeOut(duration: 0.4)) { showScreenFlash = false }
+            }
+            withAnimation(.spring(response: 0.15, dampingFraction: 0.25)) {
+                punButtonScale = 1.5
+                punGlowOpacity = 1.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.4)) {
+                    punButtonScale = 1.0
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                withAnimation(.easeOut(duration: 0.5)) { punGlowOpacity = 0.0 }
+            }
+            Haptics.heavy()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { Haptics.heavy() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { Haptics.success() }
+        }
     }
     
     private func formatDuration(_ seconds: Int) -> String {

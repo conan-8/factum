@@ -73,6 +73,15 @@ final class SyncManager {
     func recoverInterruptedSession(uid: String, context: ModelContext) async -> String? {
         guard let snapshot = SessionSnapshot.load() else { return nil }
         
+        // If the session was intentionally backgrounded (user left the app
+        // without lock mode), don't auto-recover — the session should be
+        // resumable instead. The snapshot stays on disk so ContentView can
+        // offer to reopen the camera and continue the session.
+        if snapshot.wasBackgrounded == true {
+            print("[RECOVERY] Snapshot is from a backgrounded session — skipping auto-recovery (session is resumable)")
+            return nil
+        }
+        
         // Always recover — no time or duration thresholds.
         // The user's study time is sacred and should never be silently discarded.
         
@@ -152,6 +161,33 @@ final class SyncManager {
         let allLocal = (try? context.fetch(descriptor)) ?? []
         let unsynced = allLocal.filter { $0.authorID == uid && !$0.cloudSynced }
         
+        // Also find sessions marked as synced but missing their video upload.
+        // This catches the case where the record was saved but the video failed.
+        let missingVideo = allLocal.filter {
+            $0.authorID == uid && $0.cloudSynced && $0.videoFileName != nil && $0.videoDownloadURL == nil
+        }
+        if !missingVideo.isEmpty {
+            print("[SYNC] Found \(missingVideo.count) synced sessions with missing video — retrying uploads...")
+            for timelapse in missingVideo {
+                if let videoURL = timelapse.videoURL, videoURL.isFileURL {
+                    do {
+                        let downloadURL = try await StorageService.shared.uploadVideo(
+                            localURL: videoURL, userUID: timelapse.authorID, timelapseID: timelapse.id.uuidString
+                        )
+                        timelapse.videoDownloadURL = downloadURL
+                        // Re-save the record with the video URL
+                        try await SupabaseService.shared.saveTimelapse(timelapse)
+                        print("[SYNC] ✓ Video uploaded for \(timelapse.id.uuidString.prefix(8))")
+                    } catch {
+                        print("[SYNC] ✗ Video re-upload failed for \(timelapse.id.uuidString.prefix(8)): \(error)")
+                    }
+                } else {
+                    print("[SYNC] ⚠ Local video file gone for \(timelapse.id.uuidString.prefix(8)) — cannot re-upload")
+                }
+            }
+            try? context.save()
+        }
+        
         guard !unsynced.isEmpty else {
             print("[SYNC] All local sessions are cloud-synced")
             return
@@ -161,6 +197,9 @@ final class SyncManager {
         let batchSize = 5
         let batch = Array(unsynced.prefix(batchSize))
         print("[SYNC] Found \(unsynced.count) unsynced sessions — uploading batch of \(batch.count)...")
+        for session in batch {
+            print("[SYNC]   → \(session.id.uuidString.prefix(8)) subject=\(session.subject) duration=\(session.durationSeconds)s retries=\(session.syncRetryCount) lastAttempt=\(session.lastSyncAttempt?.description ?? "never")")
+        }
         var uploaded = 0
         var consecutiveFailures = 0
         
@@ -203,17 +242,19 @@ final class SyncManager {
                 
                 // Save the session record (critical step)
                 try await SupabaseService.shared.saveTimelapse(timelapse)
+                let attemptNum = timelapse.syncRetryCount
                 timelapse.cloudSynced = true
                 timelapse.syncRetryCount = 0
                 uploaded += 1
                 consecutiveFailures = 0
-                print("[SYNC] ✓ Synced session \(timelapse.id.uuidString.prefix(8)) (attempt #\(timelapse.syncRetryCount))")
+                print("[SYNC] ✓ Synced session \(timelapse.id.uuidString.prefix(8)) (attempt #\(attemptNum))")
                 
                 // Small delay between uploads to avoid overwhelming the connection
                 try? await Task.sleep(for: .milliseconds(500))
             } catch {
                 consecutiveFailures += 1
                 print("[SYNC] ✗ Failed session \(timelapse.id.uuidString.prefix(8)) (attempt #\(timelapse.syncRetryCount)): \(error)")
+                print("[SYNC]   Error type: \(type(of: error)), details: \(String(describing: error))")
                 
                 // Longer delay after a failure before trying the next one
                 try? await Task.sleep(for: .seconds(2))
@@ -328,7 +369,10 @@ final class SyncManager {
                 thumbnailDownloadUrl: timelapse.thumbnailDownloadURL,
                 appLeaveCount: timelapse.appLeaveCount,
                 offTaskSeconds: timelapse.offTaskSeconds,
-                subjectSegmentsJson: timelapse.subjectSegmentsJSON
+                subjectSegmentsJson: timelapse.subjectSegmentsJSON,
+                pigeonOrigin: timelapse.pigeonOrigin,
+                pigeonDestination: timelapse.pigeonDestination,
+                descriptionRarity: timelapse.descriptionRarity
             )
         }
         guard let row else {
@@ -341,28 +385,30 @@ final class SyncManager {
                 try await SupabaseService.shared.saveTimelapseRow(row)
             }
             await MainActor.run {
-                timelapse.cloudSynced = true
+                // Only mark fully synced if video was uploaded (or no video exists).
+                // Sessions with a local video file but no cloud URL still need retry.
+                let hasLocalVideo = timelapse.videoFileName != nil
+                let hasCloudVideo = timelapse.videoDownloadURL != nil
+                if !hasLocalVideo || hasCloudVideo {
+                    timelapse.cloudSynced = true
+                }
                 try? context.save()
             }
-            print("[SYNC] ✓ Timelapse record saved to Supabase")
+            print("[SYNC] ✓ Timelapse record saved to Supabase (videoUploaded: \(row.videoDownloadUrl != nil))")
         } catch {
             await MainActor.run {
                 timelapse.syncRetryCount += 1
                 timelapse.lastSyncAttempt = Date()
                 try? context.save()
             }
-            print("[SYNC] Timelapse record save FAILED after \(maxImmediateRetries) attempts (will retry on foreground): \(error.localizedDescription)")
+            print("[SYNC] Timelapse record save FAILED after \(maxImmediateRetries) attempts (will retry on foreground): \(error)")
         }
     }
     
     private func syncUserStats(uid: String, context: ModelContext) async {
-        await MainActor.run {
-            let descriptor = FetchDescriptor<UserProfile>(predicate: #Predicate { $0.firebaseUID == uid })
-            if let user = try? context.fetch(descriptor).first {
-                Task {
-                    try? await SupabaseService.shared.saveUserProfile(user)
-                }
-            }
+        let descriptor = FetchDescriptor<UserProfile>(predicate: #Predicate { $0.firebaseUID == uid })
+        if let profile = try? context.fetch(descriptor).first {
+            try? await SupabaseService.shared.saveUserProfile(profile)
         }
     }
 }

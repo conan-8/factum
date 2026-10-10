@@ -11,66 +11,76 @@ import SwiftUI
 
 enum TutorialStep: Int, CaseIterable {
     case feedTab = 0
-    case recordButton = 1
-    // Steps 2-3 happen inside the camera (CameraTutorialStep)
-    case profileTab = 2
-    case stats = 3
+    case friendsTab = 1
+    case recordButton = 2
+    // Steps 3-4 happen inside the camera (CameraTutorialStep)
+    case groupsTab = 3
+    case profileTab = 4
+    case wallpaper = 5
     
     var title: String {
         switch self {
-        case .feedTab:      return "Your Feed"
+        case .feedTab:      return "Your Nest"
+        case .friendsTab:   return "Your Flock"
         case .recordButton: return "Record"
+        case .groupsTab:    return "Study Groups"
         case .profileTab:   return "Profile"
-        case .stats:        return "Detailed Stats"
+        case .wallpaper:    return "Make It Yours"
         }
     }
     
     var description: String {
         switch self {
-        case .feedTab:      return "Your sessions show up here as posts."
-        case .recordButton: return "Timelapse, pomodoro, or timer."
-        case .profileTab:   return "Your stats, streaks, and settings."
-        case .stats:        return "Weekly, monthly, and yearly breakdowns."
+        case .feedTab:      return "Study sessions show up here as posts. Share them or post to your Instagram Story."
+        case .friendsTab:   return "Find friends, accept requests, and see what they're studying."
+        case .recordButton: return "Start a timelapse, pomodoro, or timer session."
+        case .groupsTab:    return "Create or join study groups with leaderboards."
+        case .profileTab:   return "Your stats, streaks, subjects, and settings."
+        case .wallpaper:    return "Customize your background with gradients, patterns, or your own photos. Find it in Settings."
         }
     }
     
     var icon: String {
         switch self {
         case .feedTab:      return "house.fill"
+        case .friendsTab:   return "person.2.fill"
         case .recordButton: return "video.fill"
+        case .groupsTab:    return "rectangle.3.group.bubble.fill"
         case .profileTab:   return "person.circle.fill"
-        case .stats:        return "chart.bar.fill"
+        case .wallpaper:    return "photo.on.rectangle.angled"
         }
     }
     
     var buttonLabel: String {
-        self == .stats ? "Got it" : "Next"
+        self == .wallpaper ? "Got it" : "Next"
     }
     
     var isLast: Bool {
-        self == .stats
+        self == .wallpaper
     }
     
     /// Whether this step highlights a tab bar item with a spotlight cutout
     var hasTabSpotlight: Bool {
         switch self {
-        case .feedTab, .recordButton, .profileTab: return true
-        case .stats: return false
+        case .feedTab, .friendsTab, .recordButton, .groupsTab, .profileTab: return true
+        case .wallpaper: return false
         }
     }
     
     /// Whether the arrow points at a custom target rect (e.g. stats card) instead of tab bar
     var pointsAtCustomTarget: Bool {
-        self == .stats
+        self == .wallpaper
     }
     
     /// Which tab index the spotlight / arrow points at (tab bar steps only)
     var arrowTabIndex: Int {
         switch self {
         case .feedTab:      return 0
+        case .friendsTab:   return 1
         case .recordButton: return 2
+        case .groupsTab:    return 3
         case .profileTab:   return 4
-        case .stats:        return 4
+        case .wallpaper:    return 4
         }
     }
     
@@ -78,9 +88,11 @@ enum TutorialStep: Int, CaseIterable {
     var targetTab: Int? {
         switch self {
         case .feedTab:      return 0
+        case .friendsTab:   return 1
         case .recordButton: return nil
+        case .groupsTab:    return 3
         case .profileTab:   return 4
-        case .stats:        return nil
+        case .wallpaper:    return 4
         }
     }
     
@@ -211,11 +223,11 @@ struct TutorialOverlayView: View {
                     animateIn = true
                 }
             }
-            // When camera tutorial finishes, resume at profile step
+            // When camera tutorial finishes, resume at groups step
             .onChange(of: showCameraTutorial) { _, isCameraShowing in
                 if !isCameraShowing && currentStep == .recordButton {
-                    selectedTab = 4
-                    currentStep = .profileTab
+                    selectedTab = 3
+                    currentStep = .groupsTab
                     // Delay to let the full-screen cover dismiss
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         withAnimation(.easeOut(duration: 0.3)) {
@@ -234,36 +246,36 @@ struct TutorialOverlayView: View {
     // MARK: - Spotlight Position Calculation
     
     /// Returns the center point of a tab icon in global coordinates.
+    /// Matches the actual tab bar: HStack padding(.horizontal, 4), padding(.vertical, 4),
+    /// each button has frame(height: 32) + padding(.vertical, 14) = 60pt tall.
     private func tabCenter(for tabIndex: Int) -> CGPoint {
-        let innerHPad: CGFloat = 8
-        let innerVPad: CGFloat = 6
-        let buttonHeight: CGFloat = 48
+        let containerHPad: CGFloat = 4
+        let containerVPad: CGFloat = 4
+        let buttonTotalHeight: CGFloat = 60  // 32pt icon frame + 14pt * 2 vertical padding
         
-        let contentLeft = tabBarFrame.minX + innerHPad
-        let contentWidth = tabBarFrame.width - innerHPad * 2
+        let contentLeft = tabBarFrame.minX + containerHPad
+        let contentWidth = tabBarFrame.width - containerHPad * 2
         let tabWidth = contentWidth / 5.0
         
         let cx = contentLeft + tabWidth * CGFloat(tabIndex) + tabWidth / 2
-        let cy = tabBarFrame.minY + innerVPad + buttonHeight / 2
+        let cy = tabBarFrame.minY + containerVPad + buttonTotalHeight / 2
         return CGPoint(x: cx, y: cy)
     }
     
     private func spotlightRect(for step: TutorialStep) -> CGRect {
         if step.hasTabSpotlight {
             let center = tabCenter(for: step.arrowTabIndex)
-            let innerHPad: CGFloat = 8
-            let contentWidth = tabBarFrame.width - innerHPad * 2
+            let containerHPad: CGFloat = 4
+            let contentWidth = tabBarFrame.width - containerHPad * 2
             let tabWidth = contentWidth / 5.0
             let spotWidth = tabWidth - 4
-            let spotHeight: CGFloat = 48
+            let spotHeight: CGFloat = 60
             return CGRect(
                 x: center.x - spotWidth / 2,
                 y: center.y - spotHeight / 2,
                 width: spotWidth,
                 height: spotHeight
             )
-        } else if step.pointsAtCustomTarget && statsCardFrame != .zero {
-            return statsCardFrame
         }
         return .zero
     }
@@ -273,28 +285,15 @@ struct TutorialOverlayView: View {
     private func tooltipWithArrow(in geometry: GeometryProxy, spotlightRect: CGRect) -> some View {
         let screenWidth = geometry.size.width
         
-        if currentStep.pointsAtCustomTarget && statsCardFrame != .zero {
-            // Stats step: tooltip appears below the stats card, arrow points UP
-            let arrowCenterX = statsCardFrame.midX
-            let topPad = statsCardFrame.maxY + 18  // 12pt gap below spotlight + 6pt inset
-            
+        if currentStep.pointsAtCustomTarget {
+            // Wallpaper step: centered card, no arrow, no spotlight
             return AnyView(
-                VStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        // Arrow pointing up at the stats card
-                        TooltipArrow()
-                            .fill(PigeonTheme.cardBackground)
-                            .frame(width: 16, height: 10)
-                            .rotationEffect(.degrees(180))
-                            .offset(x: arrowCenterX - screenWidth / 2)
-                        
-                        cardContent
-                    }
-                    .padding(.horizontal, 24)
-                    
+                VStack {
+                    Spacer()
+                    cardContent
+                        .padding(.horizontal, 24)
                     Spacer()
                 }
-                .padding(.top, topPad)
             )
         } else {
             // Tab bar steps: tooltip above the tab bar, arrow points DOWN
@@ -347,16 +346,18 @@ struct TutorialOverlayView: View {
                 .fixedSize(horizontal: false, vertical: true)
             
             HStack {
-                // Step indicator dots (6 total: 2 tab + 2 camera + 2 tab)
+                // Step indicator dots (8 total: 3 tab + 2 camera + 3 tab)
                 HStack(spacing: 6) {
-                    ForEach(0..<6, id: \.self) { i in
+                    ForEach(0..<8, id: \.self) { i in
                         let isActive: Bool = {
                             switch i {
                             case 0: return currentStep == .feedTab
-                            case 1: return currentStep == .recordButton
-                            // 2, 3 are camera steps — never active here
-                            case 4: return currentStep == .profileTab
-                            case 5: return currentStep == .stats
+                            case 1: return currentStep == .friendsTab
+                            case 2: return currentStep == .recordButton
+                            // 3, 4 are camera steps — never active here
+                            case 5: return currentStep == .groupsTab
+                            case 6: return currentStep == .profileTab
+                            case 7: return currentStep == .wallpaper
                             default: return false
                             }
                         }()
@@ -527,13 +528,13 @@ struct CameraTutorialOverlay: View {
                 .fixedSize(horizontal: false, vertical: true)
             
             HStack {
-                // Step indicator dots (6 total, steps 2-3 are camera)
+                // Step indicator dots (8 total, steps 3-4 are camera)
                 HStack(spacing: 6) {
-                    ForEach(0..<6, id: \.self) { i in
+                    ForEach(0..<8, id: \.self) { i in
                         let isActive: Bool = {
                             switch i {
-                            case 2: return currentStep == .subjects
-                            case 3: return currentStep == .lockMode
+                            case 3: return currentStep == .subjects
+                            case 4: return currentStep == .lockMode
                             default: return false
                             }
                         }()

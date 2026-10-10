@@ -329,7 +329,7 @@ struct OnboardingView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .transition(.opacity)
                         } else if let available = usernameAvailable {
-                            Text(available ? "Username available" : "Username taken")
+                            Text(available ? "this perch is yours" : "another pigeon took it")
                                 .font(PigeonTheme.captionFont)
                                 .foregroundStyle(available ? .green : PigeonTheme.destructive)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -372,7 +372,7 @@ struct OnboardingView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                         
                         if !confirmPassword.isEmpty && !passwordsMatch {
-                            Text("Passwords don't match")
+                            Text("those coos don't match")
                                 .font(PigeonTheme.captionFont)
                                 .foregroundStyle(PigeonTheme.destructive)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -633,13 +633,10 @@ struct OnboardingView: View {
         // Check if we already have a local profile for this user
         let descriptor = FetchDescriptor<UserProfile>(predicate: #Predicate { $0.firebaseUID == uid })
         if let existing = try? modelContext.fetch(descriptor).first {
-            // Update display name / email if changed from Supabase user metadata
+            // Update display name if changed from Supabase user metadata
             if let user = AuthService.shared.currentUser {
                 if let name = user.userMetadata["full_name"]?.stringValue, !name.isEmpty {
                     existing.displayName = name
-                }
-                if let email = user.email, !email.isEmpty {
-                    existing.email = email
                 }
                 existing.avatarURL = user.userMetadata["avatar_url"]?.stringValue
             }
@@ -651,7 +648,6 @@ struct OnboardingView: View {
         let supabaseUser = AuthService.shared.currentUser
         let profile = UserProfile(
             displayName: supabaseUser?.userMetadata["full_name"]?.stringValue ?? "Student",
-            email: supabaseUser?.email ?? "",
             firebaseUID: uid,
             avatarURL: supabaseUser?.userMetadata["avatar_url"]?.stringValue,
             bio: "",
@@ -772,7 +768,7 @@ struct SignUpView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         } else if let available = usernameAvailable {
-                            Text(available ? "Username available" : "Username taken")
+                            Text(available ? "this perch is yours" : "another pigeon took it")
                                 .font(PigeonTheme.captionFont)
                                 .foregroundStyle(available ? .green : PigeonTheme.destructive)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -810,7 +806,7 @@ struct SignUpView: View {
                         
                         // Password mismatch indicator
                         if !confirmPassword.isEmpty && !passwordsMatch {
-                            Text("Passwords don't match")
+                            Text("those coos don't match")
                                 .font(PigeonTheme.captionFont)
                                 .foregroundStyle(PigeonTheme.destructive)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -954,7 +950,6 @@ struct SignUpView: View {
         
         let profile = UserProfile(
             displayName: displayName,
-            email: email,
             firebaseUID: uid,
             username: username.lowercased(),
             avatarURL: nil,
@@ -1072,7 +1067,7 @@ struct GoogleProfileSetupView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     } else if let available = usernameAvailable {
-                        Text(available ? "Username available" : "Username taken")
+                        Text(available ? "this perch is yours" : "another pigeon took it")
                             .font(PigeonTheme.captionFont)
                             .foregroundStyle(available ? .green : PigeonTheme.destructive)
                             .frame(maxWidth: .infinity, alignment: .leading)

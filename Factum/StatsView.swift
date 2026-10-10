@@ -124,7 +124,7 @@ struct StatsView: View {
                     
                     Spacer()
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 20)
                 .padding(.top, 8)
                 
                 // Mode picker
@@ -159,28 +159,20 @@ struct StatsView: View {
     // MARK: - Mode Picker
     
     private var modePicker: some View {
-        HStack(spacing: 0) {
-            ForEach(StatsViewMode.allCases, id: \.self) { mode in
-                Button {
+        PigeonUnderlinePicker(
+            tabs: StatsViewMode.allCases,
+            selection: Binding(
+                get: { selectedMode },
+                set: { newMode in
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        selectedMode = mode
+                        selectedMode = newMode
                         referenceDate = Date()
                     }
-                } label: {
-                    Text(mode.rawValue)
-                        .font(PigeonTheme.font(12, weight: selectedMode == mode ? .semibold : .regular))
-                        .foregroundStyle(selectedMode == mode ? PigeonTheme.accentText : PigeonTheme.secondaryText)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(selectedMode == mode ? PigeonTheme.accent : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-            }
-        }
-        .padding(3)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .padding(.horizontal, 16)
+            ),
+            label: { $0.rawValue }
+        )
+        .padding(.horizontal, 20)
     }
     
     // MARK: - Date Navigator
@@ -224,7 +216,7 @@ struct StatsView: View {
                 .disabled(!canGoForward)
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
     }
     
     private func navigateBack() {
@@ -300,7 +292,7 @@ struct StatsView: View {
             // Most studied highlights
             mostStudiedSection
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
     }
     
     // MARK: - Most Studied Highlights
@@ -568,7 +560,7 @@ struct DonutChartContent: View {
             Image(systemName: "chart.pie")
                 .font(.system(size: 40))
                 .foregroundStyle(PigeonTheme.tertiaryText)
-            Text("No study sessions")
+            Text("the nest is quiet")
                 .font(PigeonTheme.subheadlineFont)
                 .foregroundStyle(PigeonTheme.secondaryText)
             Text("Start a session to see your breakdown")
@@ -590,7 +582,7 @@ struct DonutChartView: View {
         DonutChartContent(breakdown: breakdown, centerLabel: centerLabel)
             .background(PigeonTheme.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 16))
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
     }
 }
 
@@ -1255,10 +1247,10 @@ struct AppLeavesPerHourChartContent: View {
                     Image(systemName: "hand.thumbsup.fill")
                         .font(.system(size: 40))
                         .foregroundStyle(PigeonTheme.tertiaryText)
-                    Text("No app leaves")
+                    Text("never left the nest")
                         .font(PigeonTheme.subheadlineFont)
                         .foregroundStyle(PigeonTheme.secondaryText)
-                    Text("Great focus!")
+                    Text("laser-focused pigeon!")
                         .font(PigeonTheme.captionFont)
                         .foregroundStyle(PigeonTheme.tertiaryText)
                 }
@@ -1470,7 +1462,7 @@ struct SwipeableCard: View {
         }
         .background(PigeonTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
         .onPreferenceChange(PageHeightPreferenceKey.self) { pageHeights = $0 }
         .animation(.easeInOut(duration: 0.25), value: activeHeight)
     }
@@ -1522,7 +1514,7 @@ func emptyBarState(message: String) -> some View {
         Text(message)
             .font(PigeonTheme.subheadlineFont)
             .foregroundStyle(PigeonTheme.secondaryText)
-        Text("Start studying to see your progress")
+        Text("start pecking to see your progress")
             .font(PigeonTheme.captionFont)
             .foregroundStyle(PigeonTheme.tertiaryText)
     }

@@ -17,6 +17,11 @@ struct ProfileView: View {
     @State private var showSignIn = false
     @State private var showEditProfile = false
     @State private var showSettings = false
+    @State private var showRecaps = false
+    @State private var appeared = false
+    @State private var showAddSubject = false
+    @State private var subjectToEdit: StudySubject? = nil
+    @State private var showShareSheet = false
     
     private var currentUser: UserProfile? {
         let uid = AuthService.shared.currentUserID
@@ -28,71 +33,67 @@ struct ProfileView: View {
         return allTimelapses.filter { $0.authorID == uid }
     }
     
+    @State private var profileTab = 0 // 0 = Progress, 1 = Sessions
+    private let profileTabs = [0, 1]
+    
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    // Scrollable title row
+                    // Top bar: "You" title left, settings gear right (Strava style)
                     HStack {
-                        Text("Profile")
+                        Text("You")
                             .font(PigeonTheme.titleFont)
                             .foregroundStyle(PigeonTheme.primaryText)
                         Spacer()
+                        
+                        Button {
+                            Haptics.medium()
+                            showRecaps = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 18, weight: .light))
+                                .foregroundStyle(PigeonTheme.secondaryText)
+                                .frame(width: 36, height: 36)
+                        }
+                        
                         Button {
                             showSettings = true
                         } label: {
                             Image(systemName: "gearshape")
                                 .font(.system(size: 20, weight: .light))
                                 .foregroundStyle(PigeonTheme.secondaryText)
-                                .frame(width: 44, height: 44)
+                                .frame(width: 36, height: 36)
                         }
                     }
-                    .padding(.top, PigeonTheme.spacing12)
+                    .padding(.top, 8)
                     .padding(.bottom, PigeonTheme.spacing8)
+                    .staggeredAppear(index: 0, appeared: appeared)
                     
                     if let user = currentUser {
                         profileHeader(user: user)
                             .padding(.bottom, PigeonTheme.spacing16)
+                            .staggeredAppear(index: 1, appeared: appeared)
                         
-                        statsGrid(user: user)
-                            .padding(.bottom, PigeonTheme.spacing12)
+                        // Underline tab picker (Strava style)
+                        PigeonUnderlinePicker(
+                            tabs: profileTabs,
+                            selection: $profileTab,
+                            label: { $0 == 0 ? "Progress" : "Sessions" }
+                        )
+                        .padding(.bottom, PigeonTheme.spacing16)
+                        .staggeredAppear(index: 2, appeared: appeared)
                         
-                        // Detailed stats link
-                        NavigationLink {
-                            StatsView()
-                        } label: {
-                            HStack {
-                                Image(systemName: "chart.bar.fill")
-                                    .foregroundStyle(PigeonTheme.secondaryText)
-                                Text("View Detailed Stats")
-                                    .font(PigeonTheme.subheadlineFont)
-                                    .foregroundStyle(PigeonTheme.primaryText)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(PigeonTheme.tertiaryText)
-                            }
-                            .padding(PigeonTheme.spacing16)
-                            .background(PigeonTheme.cardBackground)
-                            .clipShape(OrganicRect(base: PigeonTheme.cornerCard))
-                            .shadow(color: PigeonTheme.cardShadow, radius: PigeonTheme.cardShadowRadius, x: 0, y: PigeonTheme.cardShadowY)
-                        }
-                        .overlay {
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: StatsCardFrameKey.self,
-                                    value: geo.frame(in: .global)
-                                )
+                        // Tab content
+                        Group {
+                            if profileTab == 0 {
+                                progressTab(user: user)
+                            } else {
+                                myPostsSection
                             }
                         }
-                        .padding(.bottom, PigeonTheme.spacing32)
-                        
-                        studyHistorySection
-                            .padding(.bottom, PigeonTheme.spacing32)
-                        
-                        myPostsSection
+                        .staggeredAppear(index: 3, appeared: appeared)
                     } else if AuthService.shared.isSignedIn {
-                        // Signed in but local profile hasn't synced yet
                         VStack(spacing: 16) {
                             Spacer().frame(height: 80)
                             ProgressView()
@@ -105,26 +106,40 @@ struct ProfileView: View {
                         signInPrompt
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 20)
                 .padding(.bottom, 100)
             }
-            .background(PigeonTheme.background)
+            .scrollContentBackground(.hidden)
+            .pigeonWallpaper()
             .toolbar(.hidden, for: .navigationBar)
+            .onAppear { withAnimation { appeared = true } }
             .sheet(isPresented: $showEditProfile) {
                 EditProfileView()
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView()
             }
+            .sheet(isPresented: $showRecaps) {
+                if let user = currentUser {
+                    RecapsView(
+                        displayName: user.displayName,
+                        allTimelapses: userTimelapses
+                    )
+                }
+            }
+            .sheet(isPresented: $showShareSheet) {
+                if let user = currentUser {
+                    let profileLink = profileShareURL(for: user)
+                    ShareProfileSheet(url: profileLink, displayName: user.displayName)
+                }
+            }
             .task {
-                // Sync computed stats to user model and Supabase
                 guard let user = currentUser else { return }
                 let newMinutes = computedTotalStudyMinutes
                 let newStreak = computedStreakDays
                 if user.totalStudyMinutes != newMinutes || user.streakDays != newStreak {
                     user.totalStudyMinutes = newMinutes
                     user.streakDays = newStreak
-                    // Sync updated stats to Supabase
                     try? await SupabaseService.shared.saveUserProfile(user)
                 }
             }
@@ -156,6 +171,7 @@ struct ProfileView: View {
                             .foregroundStyle(PigeonTheme.secondaryText)
                             .lineLimit(2)
                     }
+                    
                 }
                 
                 Spacer()
@@ -167,11 +183,39 @@ struct ProfileView: View {
                         .font(.system(size: 17))
                         .foregroundStyle(PigeonTheme.secondaryText)
                         .padding(12)
-                        .background(PigeonTheme.cardBackground)
-                        .clipShape(Circle())
+                        .pigeonGlassSurface(cornerRadius: 20)
                 }
             }
             
+            // Friend count + share profile on one line
+            HStack(spacing: 12) {
+                HStack(spacing: 4) {
+                    Text("\(user.friendUIDs.count)")
+                        .font(PigeonTheme.subheadlineFont)
+                        .foregroundStyle(PigeonTheme.primaryText)
+                    Text("friend\(user.friendUIDs.count == 1 ? "" : "s")")
+                        .font(PigeonTheme.subheadlineFont)
+                        .foregroundStyle(PigeonTheme.secondaryText)
+                }
+                
+                Spacer()
+                
+                Button {
+                    Haptics.light()
+                    showShareSheet = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "link")
+                            .font(.system(size: 13, weight: .medium))
+                        Text("Share Profile")
+                            .font(PigeonTheme.captionFont)
+                    }
+                    .foregroundStyle(PigeonTheme.accent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .pigeonGlassSurface(cornerRadius: 10)
+                }
+            }
         }
         .padding(.top, 8)
     }
@@ -181,6 +225,20 @@ struct ProfileView: View {
     /// All-time total study minutes computed from every session
     private var computedTotalStudyMinutes: Int {
         userTimelapses.reduce(0) { $0 + $1.durationSeconds } / 60
+    }
+    
+    /// Top 3 subjects by total study time (name + minutes)
+    private var computedTopSubjects: [(name: String, minutes: Int)] {
+        var dict: [String: Int] = [:]
+        for tl in userTimelapses {
+            for seg in tl.subjectSegments {
+                dict[seg.subject, default: 0] += seg.seconds
+            }
+        }
+        return dict.map { ($0.key, $0.value / 60) }
+            .sorted { $0.1 > $1.1 }
+            .prefix(3)
+            .map { $0 }
     }
     
     /// Streak: consecutive calendar days (ending today or yesterday) with at least one session
@@ -208,131 +266,218 @@ struct ProfileView: View {
         return streak
     }
     
-    // MARK: - Stats Grid
+    // MARK: - Progress Tab (Strava-style)
     
-    private func statsGrid(user: UserProfile) -> some View {
+    private func progressTab(user: UserProfile) -> some View {
         let totalHours = computedTotalStudyMinutes / 60
         let totalMins = computedTotalStudyMinutes % 60
+        let longestMinutes = (userTimelapses.max(by: { $0.durationSeconds < $1.durationSeconds })?.durationSeconds ?? 0) / 60
+        let mostInADayMinutes = computedMostInADay / 60
         
-        return HStack(spacing: 0) {
-            statCard(value: "\(totalHours)h \(totalMins)m", label: "Total Study")
-            statCard(value: "\(userTimelapses.count)", label: "Sessions")
-            streakCard(days: computedStreakDays)
-        }
-        .background(PigeonTheme.cardBackground)
-        .clipShape(OrganicRect(base: PigeonTheme.cornerCard))
-        .shadow(color: PigeonTheme.cardShadow, radius: PigeonTheme.cardShadowRadius, x: 0, y: PigeonTheme.cardShadowY)
-    }
-    
-    private func statCard(value: String, label: String) -> some View {
-        VStack(spacing: 6) {
-            Text(value)
-                .font(PigeonTheme.font(18, weight: .bold))
-                .foregroundStyle(PigeonTheme.primaryText)
-            Text(label)
-                .font(PigeonTheme.captionFont)
-                .foregroundStyle(PigeonTheme.secondaryText)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-    }
-    
-    private func streakCard(days: Int) -> some View {
-        // Flame scales from 14pt (0 days) to 24pt (30+ days)
-        let flameSize: CGFloat = min(24, 14 + CGFloat(days) * 0.33)
-        // Opacity goes from dim (no streak) to full
-        let flameOpacity: Double = days == 0 ? 0.25 : min(1.0, 0.5 + Double(days) * 0.05)
-        
-        return VStack(spacing: 6) {
-            HStack(spacing: 4) {
-                Image(systemName: "flame.fill")
-                    .font(.system(size: flameSize))
-                    .foregroundStyle(.orange.opacity(flameOpacity))
-                Text("\(days)")
-                    .font(PigeonTheme.font(18, weight: .bold))
-                    .foregroundStyle(PigeonTheme.primaryText)
-            }
-            Text("Day Streak")
-                .font(PigeonTheme.captionFont)
-                .foregroundStyle(PigeonTheme.secondaryText)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-    }
-    
-    // MARK: - Study History
-    
-    /// Pre-computed weekly activity data to avoid per-cell Calendar work in the body.
-    private var weeklyActivity: [(label: String, minutes: Int, intensity: Double)] {
-        let dayNames = ["M", "T", "W", "T", "F", "S", "S"]
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let weekday = calendar.component(.weekday, from: today)
-        let daysFromMonday = (weekday + 5) % 7
-        guard let monday = calendar.date(byAdding: .day, value: -daysFromMonday, to: today) else { return [] }
-
-        // Build a lookup of study minutes per day (O(n) single pass)
-        var minutesByDay: [Date: Int] = [:]
-        for tl in userTimelapses {
-            let day = calendar.startOfDay(for: tl.createdAt)
-            minutesByDay[day, default: 0] += tl.durationSeconds / 60
-        }
-        let maxMinutes = max(1, minutesByDay.values.max() ?? 1)
-
-        return (0..<7).map { offset in
-            let targetDate = calendar.date(byAdding: .day, value: offset, to: monday)!
-            let mins = minutesByDay[targetDate] ?? 0
-            let intensity = mins > 0 ? max(0.3, min(1.0, Double(mins) / Double(maxMinutes))) : 0.0
-            return (dayNames[offset], mins, intensity)
-        }
-    }
-
-    private var studyHistorySection: some View {
-        VStack(alignment: .leading, spacing: PigeonTheme.spacing12) {
-            Text("This Week")
-                .pigeonSectionTitle()
+        return VStack(spacing: 20) {
+            // Stats row (Strava-style: large values, small labels, dividers)
+            PigeonStatRow(stats: [
+                (value: "\(totalHours)h \(totalMins)m", label: "Total Time"),
+                (value: "\(userTimelapses.count)", label: "Sessions"),
+                (value: "\(computedStreakDays)", label: "Streak")
+            ])
             
-            HStack(spacing: 6) {
-                ForEach(Array(weeklyActivity.enumerated()), id: \.offset) { _, day in
-                    VStack(spacing: 6) {
-                        Text(day.label)
+            // Detailed stats + Your Flock side by side
+            HStack(spacing: 12) {
+                NavigationLink {
+                    StatsView()
+                } label: {
+                    VStack(spacing: 10) {
+                        Image(systemName: "chart.bar.fill")
+                            .font(.system(size: 22))
+                            .foregroundStyle(PigeonTheme.accent)
+                        Text("Stats")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        Text("charts & trends")
                             .font(PigeonTheme.smallFont)
                             .foregroundStyle(PigeonTheme.tertiaryText)
-                        
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(day.minutes > 0
-                                  ? PigeonTheme.accent.opacity(day.intensity)
-                                  : PigeonTheme.surfaceBackground)
-                            .frame(height: 40)
+                            .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
+                    .pigeonGlassCard()
+                }
+                .overlay {
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: StatsCardFrameKey.self,
+                            value: geo.frame(in: .global)
+                        )
+                    }
+                }
+                
+                NavigationLink {
+                    FriendsView()
+                } label: {
+                    VStack(spacing: 10) {
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 22))
+                            .foregroundStyle(PigeonTheme.accent)
+                        Text("Your Flock")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        Text("manage friends")
+                            .font(PigeonTheme.smallFont)
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .pigeonGlassCard()
                 }
             }
+            
+            // Top subjects
+            if !computedTopSubjects.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("TOP SUBJECTS")
+                        .pigeonSectionTitle()
+                    
+                    ForEach(computedTopSubjects, id: \.name) { subject in
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(StudySubject.color(for: subject.name, in: subjects))
+                                .frame(width: 8, height: 8)
+                            Text(subject.name)
+                                .font(PigeonTheme.captionFont)
+                                .foregroundStyle(PigeonTheme.primaryText)
+                            Spacer()
+                            Text("\(subject.minutes / 60)h \(subject.minutes % 60)m")
+                                .font(.gloucester(size: 14))
+                                .foregroundStyle(PigeonTheme.secondaryText)
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 14)
+                        .pigeonGlassSurface(cornerRadius: 12)
+                    }
+                }
+                .padding(.top, 4)
+            }
+            
+            // Personal records
+            VStack(alignment: .leading, spacing: 10) {
+                Text("PERSONAL RECORDS")
+                    .pigeonSectionTitle()
+                
+                HStack(spacing: 10) {
+                    VStack(spacing: 4) {
+                        Text("\(longestMinutes / 60)h \(longestMinutes % 60)m")
+                            .font(.gloucester(size: 18))
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        Text("Longest Session")
+                            .font(PigeonTheme.smallFont)
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .pigeonGlassSurface(cornerRadius: 12)
+                    
+                    VStack(spacing: 4) {
+                        Text("\(mostInADayMinutes / 60)h \(mostInADayMinutes % 60)m")
+                            .font(.gloucester(size: 18))
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        Text("Most in a Day")
+                            .font(PigeonTheme.smallFont)
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .pigeonGlassSurface(cornerRadius: 12)
+                }
+            }
+            .padding(.top, 4)
+            
+            // Subjects
+            subjectsSection
+        }
+    }
+    
+    /// Most minutes studied in a single calendar day
+    private var computedMostInADay: Int {
+        let calendar = Calendar.current
+        let byDay = Dictionary(grouping: userTimelapses) { calendar.startOfDay(for: $0.createdAt) }
+        let maxSeconds = byDay.values.map { $0.reduce(0) { $0 + $1.durationSeconds } }.max() ?? 0
+        return maxSeconds / 60
+    }
+    
+    // MARK: - Subjects Section
+    
+    private var subjectsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("YOUR SUBJECTS")
+                    .pigeonSectionTitle()
+                Spacer()
+                NavigationLink {
+                    ManageSubjectsView()
+                } label: {
+                    Text("Edit")
+                        .font(PigeonTheme.smallFont)
+                        .foregroundStyle(PigeonTheme.accent)
+                }
+            }
+            
+            if subjects.isEmpty {
+                Text("No subjects yet. Tap Edit to add some.")
+                    .font(PigeonTheme.captionFont)
+                    .foregroundStyle(PigeonTheme.tertiaryText)
+                    .padding(.vertical, 8)
+            } else {
+                // Wrap subjects as colored pills
+                WrappingHStack(items: subjects) { subject in
+                    Button {
+                        subjectToEdit = subject
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(subject.color)
+                                .frame(width: 8, height: 8)
+                            Text(subject.name)
+                                .font(PigeonTheme.captionFont)
+                                .foregroundStyle(PigeonTheme.primaryText)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .pigeonGlassSurface(cornerRadius: 16)
+                    }
+                }
+            }
+            
+            Button {
+                Haptics.light()
+                showAddSubject = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Add Subject")
+                        .font(PigeonTheme.captionFont)
+                }
+                .foregroundStyle(PigeonTheme.accent)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .pigeonGlassSurface(cornerRadius: 16)
+            }
+        }
+        .padding(.top, 4)
+        .sheet(isPresented: $showAddSubject) {
+            AddSubjectView()
+        }
+        .sheet(item: $subjectToEdit) { subject in
+            EditSubjectView(subject: subject)
         }
     }
     
     // MARK: - My Posts
     
-    @State private var showAllSessions = false
-    
     private var myPostsSection: some View {
         VStack(alignment: .leading, spacing: PigeonTheme.spacing12) {
-            HStack {
-                Text("My Sessions")
-                    .pigeonSectionTitle()
-                
-                Spacer()
-                
-                if !userTimelapses.isEmpty {
-                    Button {
-                        showAllSessions = true
-                    } label: {
-                        Text("View All")
-                            .font(PigeonTheme.captionFont)
-                            .foregroundStyle(PigeonTheme.accent)
-                    }
-                }
-            }
+            Text("My Sessions")
+                .pigeonSectionTitle()
             
             if userTimelapses.isEmpty {
                 Text("Your recorded sessions will appear here.")
@@ -341,18 +486,24 @@ struct ProfileView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, PigeonTheme.spacing16)
             } else {
-                // Show recent sessions as full cards (up to 3)
-                ForEach(Array(userTimelapses.prefix(3))) { timelapse in
-                    TimelapseCardView(timelapse: timelapse)
+                LazyVStack(spacing: 16) {
+                    ForEach(userTimelapses) { timelapse in
+                        TimelapseCardView(timelapse: timelapse)
+                    }
                 }
             }
-        }
-        .sheet(isPresented: $showAllSessions) {
-            AllSessionsView(timelapses: userTimelapses)
         }
     }
     
     // MARK: - Sign In Prompt
+    
+    // MARK: - Share Profile
+    
+    private func profileShareURL(for user: UserProfile) -> URL {
+        // Use username if available, otherwise fall back to firebaseUID
+        let identifier = user.username ?? user.firebaseUID ?? user.id.uuidString
+        return URL(string: "https://pigeonstudy.ing/\(identifier)")!
+    }
     
     private var signInPrompt: some View {
         VStack(spacing: 24) {
@@ -394,6 +545,118 @@ struct ProfileView: View {
     }
 }
 
+// MARK: - Share Profile Sheet
+
+/// Shows a compact link preview popup with copy and share options.
+struct ShareProfileSheet: View {
+    let url: URL
+    let displayName: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var copied = false
+    @State private var showSystemShare = false
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            // Drag indicator
+            Capsule()
+                .fill(PigeonTheme.separator)
+                .frame(width: 36, height: 5)
+                .padding(.top, 10)
+            
+            // Link preview
+            HStack(spacing: 12) {
+                PigeonIcon(size: 32, color: PigeonTheme.accent)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayName)
+                        .font(PigeonTheme.subheadlineFont)
+                        .foregroundStyle(PigeonTheme.primaryText)
+                    Text(url.absoluteString)
+                        .font(PigeonTheme.smallFont)
+                        .foregroundStyle(PigeonTheme.accent)
+                        .lineLimit(1)
+                }
+                
+                Spacer()
+            }
+            .padding(14)
+            .background(PigeonTheme.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            
+            // Action buttons side by side
+            HStack(spacing: 10) {
+                Button {
+                    Haptics.light()
+                    UIPasteboard.general.url = url
+                    withAnimation { copied = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        withAnimation { copied = false }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 14, weight: .medium))
+                        Text(copied ? "Copied!" : "Copy Link")
+                            .font(PigeonTheme.captionFont)
+                    }
+                    .foregroundStyle(PigeonTheme.primaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(PigeonTheme.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(PigeonTheme.separator, lineWidth: 1)
+                    )
+                }
+                
+                Button {
+                    Haptics.medium()
+                    showSystemShare = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 14, weight: .medium))
+                        Text("Share")
+                            .font(PigeonTheme.captionFont)
+                    }
+                    .foregroundStyle(PigeonTheme.accentText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(PigeonTheme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .background(PigeonTheme.background)
+        .presentationDetents([.height(200)])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(PigeonTheme.background)
+        .sheet(isPresented: $showSystemShare) {
+            SystemShareSheet(url: url, displayName: displayName)
+        }
+    }
+}
+
+/// Wraps UIActivityViewController for the native iOS share sheet.
+private struct SystemShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    let displayName: String
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let text = "Check out \(displayName)'s study profile on Pigeon"
+        let controller = UIActivityViewController(
+            activityItems: [text, url],
+            applicationActivities: nil
+        )
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
 // MARK: - Edit Profile View
 
 struct EditProfileView: View {
@@ -422,6 +685,7 @@ struct EditProfileView: View {
     
     var body: some View {
         NavigationStack {
+            ScrollView {
             VStack(spacing: 20) {
                 // Avatar with photo picker
                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
@@ -593,16 +857,11 @@ struct EditProfileView: View {
                 .background(PigeonTheme.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                Spacer()
             }
             .padding(.horizontal, 16)
-            .background(PigeonTheme.background)
-            .onTapGesture {
-                UIApplication.shared.sendAction(
-                    #selector(UIResponder.resignFirstResponder),
-                    to: nil, from: nil, for: nil
-                )
             }
+            .scrollDismissesKeyboard(.interactively)
+            .background(PigeonTheme.background)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
@@ -675,6 +934,7 @@ struct EditProfileView: View {
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @Query private var users: [UserProfile]
     @State private var googlePhotosBackup = GooglePhotosService.shared.isBackupEnabled
     @State private var isRequestingScope = false
@@ -706,25 +966,10 @@ struct SettingsView: View {
                     }
                     .listRowBackground(PigeonTheme.cardBackground)
 
-                    HStack(spacing: 12) {
-                        Image(systemName: "paintbrush.fill")
-                            .foregroundStyle(PigeonTheme.secondaryText)
-                            .frame(width: 28)
-                        Picker("Appearance", selection: $appearanceMode) {
-                            Text("Light").tag(1)
-                            Text("Dark").tag(2)
-                        }
-                        .pickerStyle(.segmented)
-                        .onAppear {
-                            let serifFont = UIFont(name: "Georgia", size: 13)
-                                ?? UIFont.systemFont(ofSize: 13, weight: .light)
-                            UISegmentedControl.appearance().setTitleTextAttributes(
-                                [.font: serifFont], for: .normal
-                            )
-                            UISegmentedControl.appearance().setTitleTextAttributes(
-                                [.font: serifFont], for: .selected
-                            )
-                        }
+                    NavigationLink {
+                        WallpaperPickerView(mode: .home)
+                    } label: {
+                        settingsRow(icon: "photo.artframe", title: "Wallpaper")
                     }
                     .listRowBackground(PigeonTheme.cardBackground)
                     NavigationLink {
@@ -803,10 +1048,16 @@ struct SettingsView: View {
                 }
                 
                 Section {
-                    NavigationLink {
-                        SettingsPlaceholderView(title: "Help & Support")
+                    Button {
+                        openURL(URL(string: "https://pigeonstudy.ing/support")!)
                     } label: {
                         settingsRow(icon: "questionmark.circle.fill", title: "Help & Support")
+                    }
+                    .listRowBackground(PigeonTheme.cardBackground)
+                    Button {
+                        openURL(URL(string: "https://pigeonstudy.ing/privacy")!)
+                    } label: {
+                        settingsRow(icon: "hand.raised.fill", title: "Privacy Policy")
                     }
                     .listRowBackground(PigeonTheme.cardBackground)
                     NavigationLink {
@@ -867,13 +1118,7 @@ struct SettingsView: View {
             .toolbarBackground(PigeonTheme.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
         }
-        .preferredColorScheme(appearanceMode == 1 ? .light : .dark)
-        .onAppear {
-            // First time: resolve "system" (0) to the device's actual setting
-            if appearanceMode == 0 {
-                appearanceMode = UITraitCollection.current.userInterfaceStyle == .dark ? 2 : 1
-            }
-        }
+        .preferredColorScheme(appearanceMode == 0 ? nil : (appearanceMode == 1 ? .light : .dark))
     }
     
     private func settingsRow(icon: String, title: String) -> some View {

@@ -15,11 +15,14 @@ struct GroupsView: View {
     @State private var groupInvites: [(invite: GroupInviteRow, groupName: String)] = []
     @State private var showCreateGroup = false
     @State private var isLoading = true
+    @State private var appeared = false
     
     private var currentUser: UserProfile? {
         let uid = AuthService.shared.currentUserID
         return users.first { $0.firebaseUID == uid }
     }
+    
+    @State private var groupTab = 0 // 0 = My Groups, 1 = Invites
     
     var body: some View {
         NavigationStack {
@@ -41,45 +44,67 @@ struct GroupsView: View {
                         }
                     }
                     .padding(.top, 8)
+                    .staggeredAppear(index: 0, appeared: appeared)
                     
-                    // Pending invites
-                    if !groupInvites.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("INVITES")
-                                .font(PigeonTheme.smallFont)
-                                .foregroundStyle(PigeonTheme.tertiaryText)
-                                .tracking(1)
-                            
-                            ForEach(groupInvites, id: \.invite.id) { item in
-                                inviteRow(item.invite, groupName: item.groupName)
+                    // Underline tab picker (Strava style)
+                    PigeonUnderlinePicker(
+                        tabs: [0, 1],
+                        selection: $groupTab,
+                        label: { $0 == 0 ? "My Groups" : "Invites" },
+                        badge: { tab in
+                            tab == 1 && !groupInvites.isEmpty ? groupInvites.count : nil
+                        }
+                    )
+                    .staggeredAppear(index: 1, appeared: appeared)
+                    
+                    if groupTab == 0 {
+                        // Groups list
+                        if groups.isEmpty && !isLoading {
+                            emptyState
+                        } else if isLoading {
+                            ProgressView().padding(.top, 40)
+                        } else {
+                            LazyVStack(spacing: 12) {
+                                ForEach(groups, id: \.id) { group in
+                                    NavigationLink {
+                                        GroupDetailView(group: group)
+                                    } label: {
+                                        groupCard(group)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                         }
-                    }
-                    
-                    // Groups list
-                    if groups.isEmpty && !isLoading {
-                        emptyState
-                    } else if isLoading {
-                        ProgressView().padding(.top, 40)
                     } else {
-                        LazyVStack(spacing: 12) {
-                            ForEach(groups, id: \.id) { group in
-                                NavigationLink {
-                                    GroupDetailView(group: group)
-                                } label: {
-                                    groupCard(group)
+                        // Invites tab
+                        if groupInvites.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Spacer().frame(height: 32)
+                                Text("no carrier pigeons")
+                                    .font(.gloucester(size: 22))
+                                    .foregroundStyle(PigeonTheme.primaryText)
+                                Text("Group invitations will appear here")
+                                    .font(PigeonTheme.captionFont)
+                                    .foregroundStyle(PigeonTheme.tertiaryText)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            LazyVStack(spacing: 10) {
+                                ForEach(groupInvites, id: \.invite.id) { item in
+                                    inviteRow(item.invite, groupName: item.groupName)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 20)
                 .padding(.bottom, 100)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(PigeonTheme.background)
+            .scrollContentBackground(.hidden)
+            .pigeonWallpaper()
             .toolbar(.hidden, for: .navigationBar)
+            .onAppear { withAnimation { appeared = true } }
             .sheet(isPresented: $showCreateGroup) {
                 CreateGroupView {
                     Task { await loadGroups() }
@@ -90,21 +115,21 @@ struct GroupsView: View {
     }
     
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Spacer().frame(height: 40)
+        VStack(alignment: .leading, spacing: 12) {
+            Spacer().frame(height: 32)
             Image("Pigeon3Icon")
                 .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 60, height: 60)
+                .frame(width: 48, height: 48)
                 .foregroundStyle(PigeonTheme.tertiaryText)
-            Text("No groups yet")
-                .font(PigeonTheme.headlineFont)
+            Text("no flocks yet")
+                .font(.gloucester(size: 22))
                 .foregroundStyle(PigeonTheme.primaryText)
             Text("Create a study group to compete\nwith friends on leaderboards")
                 .font(PigeonTheme.captionFont)
                 .foregroundStyle(PigeonTheme.tertiaryText)
-                .multilineTextAlignment(.center)
+                .padding(.bottom, 4)
             Button {
                 showCreateGroup = true
             } label: {
@@ -114,9 +139,10 @@ struct GroupsView: View {
                     .padding(.horizontal, 24)
                     .padding(.vertical, 10)
                     .background(PigeonTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(OrganicRect(base: 10))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
     
     private func groupCard(_ group: StudyGroupRow) -> some View {
@@ -144,8 +170,7 @@ struct GroupsView: View {
                 .foregroundStyle(PigeonTheme.tertiaryText)
         }
         .padding(14)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .pigeonGlassSurface(cornerRadius: 14)
     }
     
     private func inviteRow(_ invite: GroupInviteRow, groupName: String) -> some View {
@@ -178,8 +203,7 @@ struct GroupsView: View {
             }
         }
         .padding(14)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .pigeonGlassSurface(cornerRadius: 14)
     }
     
     // MARK: - Data
@@ -316,6 +340,7 @@ struct CreateGroupView: View {
                 }
                 .padding(24)
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(PigeonTheme.background)
             .navigationTitle("New Group")
             .navigationBarTitleDisplayMode(.inline)
@@ -422,26 +447,11 @@ struct GroupDetailView: View {
                 .padding(.top, 8)
                 
                 // Tab selector
-                HStack(spacing: 0) {
-                    ForEach(["Leaderboard", "Feed"], id: \.self) { tab in
-                        let idx = tab == "Leaderboard" ? 0 : 1
-                        Button {
-                            Haptics.selection()
-                            withAnimation(.easeInOut(duration: 0.2)) { selectedTab = idx }
-                        } label: {
-                            Text(tab)
-                                .font(PigeonTheme.subheadlineFont)
-                                .foregroundStyle(selectedTab == idx ? PigeonTheme.primaryText : PigeonTheme.tertiaryText)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(selectedTab == idx ? PigeonTheme.accent : Color.clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
-                    }
-                }
-                .padding(4)
-                .background(PigeonTheme.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                PigeonUnderlinePicker(
+                    tabs: [0, 1],
+                    selection: $selectedTab,
+                    label: { $0 == 0 ? "Leaderboard" : "Feed" }
+                )
                 
                 if selectedTab == 0 {
                     leaderboardSection
@@ -452,7 +462,7 @@ struct GroupDetailView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 100)
         }
-        .background(PigeonTheme.background)
+        .background(Color.clear)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -524,7 +534,7 @@ struct GroupDetailView: View {
         if isLoading {
             ProgressView().padding(.top, 20)
         } else if leaderboard.isEmpty {
-            Text("No members found")
+            Text("the flock hasn't arrived")
                 .font(PigeonTheme.captionFont)
                 .foregroundStyle(PigeonTheme.tertiaryText)
                 .padding(.top, 20)
@@ -567,8 +577,7 @@ struct GroupDetailView: View {
                 .foregroundStyle(PigeonTheme.primaryText)
         }
         .padding(14)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .pigeonGlassSurface(cornerRadius: 14)
     }
     
     private func medalColor(for rank: Int) -> Color {
@@ -590,7 +599,7 @@ struct GroupDetailView: View {
                 Image(systemName: "rectangle.stack")
                     .font(.system(size: 32))
                     .foregroundStyle(PigeonTheme.tertiaryText)
-                Text("No study sessions yet")
+                Text("no feathers ruffled yet")
                     .font(PigeonTheme.captionFont)
                     .foregroundStyle(PigeonTheme.tertiaryText)
             }
@@ -630,8 +639,7 @@ struct GroupDetailView: View {
                 .foregroundStyle(PigeonTheme.tertiaryText)
         }
         .padding(14)
-        .background(PigeonTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .pigeonGlassSurface(cornerRadius: 14)
     }
     
     private func loadLeaderboard() async {
@@ -721,6 +729,7 @@ struct InviteMemberView: View {
                     .padding(.horizontal, 16)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(PigeonTheme.background)
             .navigationTitle("Invite Members")
             .navigationBarTitleDisplayMode(.inline)

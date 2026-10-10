@@ -8,10 +8,12 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import Auth
 
 struct ContentView: View {
     @Binding var deepLinkTimelapseID: String?
     @Environment(AuthService.self) private var authService
+    @Environment(WallpaperManager.self) private var wallpaperManager
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \StudyTimelapse.createdAt, order: .reverse) private var allTimelapses: [StudyTimelapse]
     @Query private var users: [UserProfile]
@@ -20,7 +22,6 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var hasResolvedAuth = false
     @State private var deepLinkTimelapse: StudyTimelapse?
-    @Namespace private var tabBarNamespace
     /// 0 = system, 1 = light, 2 = dark
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
     @AppStorage("hasSeenTutorial") private var hasSeenTutorial = false
@@ -31,6 +32,7 @@ struct ContentView: View {
     @State private var recoveredSessionDescription: String?
     @State private var showRecoveryAlert = false
     @GestureState private var tabDragOffset: CGFloat = 0
+    @State private var contentAppeared = false
     
     /// Navigable tab tags in order (excludes the center record button).
     private let navigableTabs = [0, 1, 3, 4]
@@ -83,6 +85,7 @@ struct ContentView: View {
                 
                 // Floating Liquid Glass tab bar
                 customTabBar
+                    .staggeredAppear(index: 1, appeared: contentAppeared)
                     .overlay(
                         GeometryReader { geo in
                             Color.clear
@@ -95,7 +98,7 @@ struct ContentView: View {
                         }
                     )
                     .padding(.bottom, 2)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 6)
                 
                 // Tutorial coach marks overlay (shown once after first sign-in)
                 if showTutorial {
@@ -115,6 +118,7 @@ struct ContentView: View {
                 }
             }
         }
+        .ignoresSafeArea(.keyboard)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PigeonTheme.background)
         .preferredColorScheme(appearanceMode == 0 ? nil : (appearanceMode == 1 ? .light : .dark))
@@ -155,17 +159,20 @@ struct ContentView: View {
             }
             if authService.isSignedIn {
                 hasResolvedAuth = true
+                withAnimation { contentAppeared = true }
                 await syncFromCloud()
                 seedDemoDataIfNeeded()
             } else {
                 showOnboarding = true
                 hasResolvedAuth = true
+                withAnimation { contentAppeared = true }
             }
         }
         .onChange(of: authService.isSignedIn) { _, signedIn in
             if signedIn {
                 showOnboarding = false
                 hasResolvedAuth = true
+                withAnimation { contentAppeared = true }
                 Task {
                     await syncFromCloud()
                     seedDemoDataIfNeeded()
@@ -194,6 +201,8 @@ struct ContentView: View {
         } message: {
             Text("Your last study session was interrupted but we saved it — \(recoveredSessionDescription ?? "study session") has been added to your history.")
         }
+        .onAppear { loadTabBarAvatar() }
+        .onChange(of: currentUserAvatarURL) { _, _ in loadTabBarAvatar() }
     }
     
     private var currentUserAvatarURL: String? {
@@ -201,11 +210,25 @@ struct ContentView: View {
         return users.first { $0.firebaseUID == uid }?.avatarURL
     }
     
-    private var tabBarAvatarImage: UIImage? {
+    @State private var tabBarAvatarImage: UIImage? = nil
+
+    private func loadTabBarAvatar() {
         guard let avatarURL = currentUserAvatarURL,
-              let url = URL(string: avatarURL),
-              url.isFileURL else { return nil }
-        return UIImage(contentsOfFile: url.path)
+              let url = URL(string: avatarURL) else {
+            tabBarAvatarImage = nil
+            return
+        }
+        if url.isFileURL {
+            tabBarAvatarImage = UIImage(contentsOfFile: url.path)
+            return
+        }
+        // Remote URL — load async
+        Task {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let image = UIImage(data: data) {
+                await MainActor.run { tabBarAvatarImage = image }
+            }
+        }
     }
     
     // MARK: - Custom Tab Bar
@@ -215,36 +238,49 @@ struct ContentView: View {
         case asset(String)
     }
 
-    private let tabs: [(icon: TabIcon, tag: Int)] = [
-        (.asset("NestIcon"), 0),              // Home
-        (.asset("Pigeon2Icon"), 1),            // Friends
-        (.system("video.fill"), 2),            // Record (center)
-        (.asset("Pigeon3Icon"), 3),            // Groups
-        (.asset("Pigeon1Icon"), 4),            // Profile (solo pigeon)
+    private let tabs: [(icon: TabIcon, label: String, tag: Int)] = [
+        (.system("house"), "Home", 0),
+        (.system("person.2"), "Friends", 1),
+        (.system("video"), "Record", 2),
+        (.system("rectangle.3.group.bubble"), "Groups", 3),
+        (.system("person.crop.circle"), "You", 4),
     ]
 
     @ViewBuilder
     private func tabIcon(for icon: TabIcon, isSelected: Bool) -> some View {
-        let color = isSelected ? PigeonTheme.primaryText : PigeonTheme.secondaryText
+        let color = isSelected ? PigeonTheme.primaryText : PigeonTheme.tertiaryText
         switch icon {
         case .system(let name):
-            Image(systemName: name)
-                .font(.system(size: 20, weight: .medium))
+            Image(systemName: isSelected ? selectedIconName(name) : name)
+                .font(.system(size: 24, weight: .medium))
                 .foregroundStyle(color)
         case .asset(let name):
-            let size: CGFloat = name == "NestIcon" ? 42 : 34
             Image(name)
                 .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
-                .frame(width: size, height: size)
-                .padding(.bottom, 2)
+                .frame(width: 28, height: 28)
                 .foregroundStyle(color)
         }
     }
+
+    /// Returns the filled variant of an SF Symbol name when selected.
+    /// House stays outline-only for a clean line-art look.
+    private func selectedIconName(_ name: String) -> String {
+        switch name {
+        case "house": return "house"
+        case "person.2": return "person.2.fill"
+        case "video": return "video.fill"
+        case "rectangle.3.group.bubble": return "rectangle.3.group.bubble.fill"
+        case "person.crop.circle": return "person.crop.circle.fill"
+        default: return name
+        }
+    }
+    
+    @Namespace private var glassSliderNS
     
     private var customTabBar: some View {
-        GlassEffectContainer(spacing: 0) {
+        GlassEffectContainer {
             HStack(spacing: 0) {
                 ForEach(tabs, id: \.tag) { tab in
                     if tab.tag == 2 {
@@ -254,56 +290,72 @@ struct ContentView: View {
                             showCamera = true
                         } label: {
                             tabIcon(for: tab.icon, isSelected: true)
-                                .frame(height: 48)
+                                .frame(height: 32)
                                 .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
                         }
                         .frame(maxWidth: .infinity)
-                    } else if tab.tag == 4, let avatarImage = tabBarAvatarImage {
-                        // Profile tab with user's avatar
+                    } else if tab.tag == 4 {
+                        // Profile tab — always shows user's avatar
                         Button {
                             Haptics.light()
-                            withAnimation(.smooth(duration: 0.3)) {
+                            withAnimation(.smooth(duration: 0.35)) {
                                 selectedTab = tab.tag
                             }
                         } label: {
-                            Image(uiImage: avatarImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 28, height: 28)
-                                .clipShape(Circle())
-                                .overlay(
-                                    Circle()
-                                        .stroke(
-                                            selectedTab == tab.tag ? PigeonTheme.primaryText : .clear,
-                                            lineWidth: 2
-                                        )
-                                )
-                                .frame(height: 48)
-                                .frame(maxWidth: .infinity)
-                                .background {
-                                    if selectedTab == tab.tag {
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .fill(PigeonTheme.primaryText.opacity(0.15))
-                                            .matchedGeometryEffect(id: "activeTab", in: tabBarNamespace)
-                                    }
+                            Group {
+                                if let avatarImage = tabBarAvatarImage {
+                                    Image(uiImage: avatarImage)
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    // Default avatar placeholder
+                                    Image(systemName: "person.fill")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(PigeonTheme.tertiaryText)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .background(PigeonTheme.separator)
                                 }
+                            }
+                            .frame(width: 28, height: 28)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(
+                                        selectedTab == tab.tag ? PigeonTheme.primaryText : .clear,
+                                        lineWidth: 2
+                                    )
+                            )
+                            .frame(height: 32)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background {
+                                if selectedTab == tab.tag {
+                                    Capsule()
+                                        .fill(.clear)
+                                        .glassEffect(.regular.interactive(), in: .capsule)
+                                        .glassEffectID("tabSlider", in: glassSliderNS)
+                                }
+                            }
                         }
                         .frame(maxWidth: .infinity)
                     } else {
                         Button {
                             Haptics.light()
-                            withAnimation(.smooth(duration: 0.3)) {
+                            withAnimation(.smooth(duration: 0.35)) {
                                 selectedTab = tab.tag
                             }
                         } label: {
                             tabIcon(for: tab.icon, isSelected: selectedTab == tab.tag)
-                                .frame(height: 48)
+                                .frame(height: 32)
                                 .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
                                 .background {
                                     if selectedTab == tab.tag {
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .fill(PigeonTheme.primaryText.opacity(0.15))
-                                            .matchedGeometryEffect(id: "activeTab", in: tabBarNamespace)
+                                        Capsule()
+                                            .fill(.clear)
+                                            .glassEffect(.regular.interactive(), in: .capsule)
+                                            .glassEffectID("tabSlider", in: glassSliderNS)
                                     }
                                 }
                         }
@@ -311,9 +363,9 @@ struct ContentView: View {
                     }
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
-            .glassEffect(in: .rect(cornerRadius: 24))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 4)
+            .glassEffect(in: .rect(cornerRadius: 28))
         }
     }
     
@@ -325,7 +377,7 @@ struct ContentView: View {
         guard !uid.isEmpty else { return }
         let profile = users.first { $0.firebaseUID == uid }
         let name = profile?.displayName ?? "Demo User"
-        let email = profile?.email ?? ""
+        let email = authService.currentUser?.email ?? ""
         SampleData.seedDemoDataIfNeeded(authorID: uid, authorName: name, email: email, context: modelContext)
     }
 
@@ -337,10 +389,18 @@ struct ContentView: View {
         }
         print("[SYNC] ===== SYNC STARTED for UID: \(uid) =====")
         
-        // Recover any interrupted study session before syncing
+        // Recover any interrupted study session before syncing.
+        // If the session was intentionally backgrounded (user left the app
+        // without lock mode), recoverInterruptedSession will return nil and
+        // the snapshot stays on disk. In that case, auto-open the camera so
+        // the session can resume where it left off.
         if let description = await SyncManager.shared.recoverInterruptedSession(uid: uid, context: modelContext) {
             recoveredSessionDescription = description
             showRecoveryAlert = true
+        } else if let snapshot = SessionSnapshot.load(), snapshot.wasBackgrounded == true {
+            // Session was backgrounded and the app was killed — reopen camera to resume
+            print("[SYNC] Backgrounded session detected — auto-opening camera for resumption")
+            showCamera = true
         }
         
         // Sync user profile from Supabase (creates local profile if needed)
@@ -466,6 +526,9 @@ struct ContentView: View {
         
         // Recompute stats from all local timelapse records
         recomputeStatsFromTimelapses(uid: uid)
+        
+        // Backfill stale author info on old sessions so name/avatar stays current
+        backfillAuthorInfo(uid: uid)
         
         try? modelContext.save()
     }
@@ -748,6 +811,28 @@ struct ContentView: View {
         // Always push stats to cloud so all devices see the same numbers
         Task {
             try? await SupabaseService.shared.saveUserProfile(profile)
+        }
+    }
+    
+    /// Update authorName and authorAvatarURL on all of the user's sessions
+    /// so they reflect the current profile (fixes stale "m" initials / old names).
+    @MainActor
+    private func backfillAuthorInfo(uid: String) {
+        let profileDescriptor = FetchDescriptor<UserProfile>(predicate: #Predicate { $0.firebaseUID == uid })
+        guard let profile = try? modelContext.fetch(profileDescriptor).first else { return }
+        
+        let tlDescriptor = FetchDescriptor<StudyTimelapse>()
+        let allLocal = (try? modelContext.fetch(tlDescriptor)) ?? []
+        var updated = 0
+        for tl in allLocal where tl.authorID == uid {
+            if tl.authorName != profile.displayName || tl.authorAvatarURL != profile.avatarURL {
+                tl.authorName = profile.displayName
+                tl.authorAvatarURL = profile.avatarURL
+                updated += 1
+            }
+        }
+        if updated > 0 {
+            print("[SYNC] Backfilled author info on \(updated) sessions")
         }
     }
 }

@@ -186,122 +186,123 @@ struct EditSubjectView: View {
     
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 24) {
-                // Name
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Subject Name")
-                        .font(PigeonTheme.subheadlineFont)
-                        .foregroundStyle(PigeonTheme.primaryText)
-                    
-                    TextField("e.g. Economics", text: $name)
-                        .font(PigeonTheme.bodyFont)
-                        .foregroundStyle(PigeonTheme.primaryText)
-                        .padding(14)
-                        .background(PigeonTheme.cardBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                
-                // Color selection
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Color")
-                        .font(PigeonTheme.subheadlineFont)
-                        .foregroundStyle(PigeonTheme.primaryText)
-                    
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
-                        ForEach(presetColors, id: \.0) { colorName, color in
-                            Button {
-                                Haptics.selection()
-                                selectedColor = color
-                            } label: {
-                                Circle()
-                                    .fill(color)
-                                    .frame(width: 44, height: 44)
-                                    .overlay(
-                                        Circle()
-                                            .strokeBorder(.white, lineWidth: selectedColor == color ? 3 : 0)
-                                    )
-                            }
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // Name
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Subject Name")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        
+                        TextField("e.g. Economics", text: $name)
+                            .font(PigeonTheme.bodyFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                            .padding(14)
+                            .background(PigeonTheme.cardBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     
-                    // Custom color picker
-                    HStack(spacing: 12) {
-                        Text("Custom")
-                            .font(PigeonTheme.captionFont)
-                            .foregroundStyle(PigeonTheme.secondaryText)
-                        ColorPicker("", selection: $selectedColor, supportsOpacity: false)
-                            .labelsHidden()
-                    }
-                }
-                
-                // Preview
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(selectedColor)
-                        .frame(width: 14, height: 14)
-                    Text(name.isEmpty ? "Preview" : name)
-                        .font(PigeonTheme.bodyFont)
-                        .foregroundStyle(name.isEmpty ? PigeonTheme.tertiaryText : PigeonTheme.primaryText)
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(PigeonTheme.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                
-                Spacer()
-                
-                // Save button
-                Button {
-                    Haptics.medium()
-                    let newName = name.trimmingCharacters(in: .whitespaces)
-                    let oldName = subject.name
-                    
-                    // Update the subject itself
-                    subject.name = newName
-                    subject.colorHex = selectedColor.hexString
-                    
-                    // Cascade rename to all timelapse records that reference the old name
-                    if oldName != newName {
-                        let descriptor = FetchDescriptor<StudyTimelapse>()
-                        if let allTimelapses = try? modelContext.fetch(descriptor) {
-                            for timelapse in allTimelapses {
-                                // Update legacy subject field
-                                if timelapse.subject == oldName {
-                                    timelapse.subject = newName
-                                }
-                                // Update subject segments JSON
-                                var segments = timelapse.subjectSegments
-                                var changed = false
-                                for i in segments.indices where segments[i].subject == oldName {
-                                    segments[i] = SubjectSegment(subject: newName, seconds: segments[i].seconds)
-                                    changed = true
-                                }
-                                if changed {
-                                    timelapse.subjectSegments = segments
+                    // Color selection
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Color")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
+                            ForEach(presetColors, id: \.0) { colorName, color in
+                                Button {
+                                    Haptics.selection()
+                                    selectedColor = color
+                                } label: {
+                                    Circle()
+                                        .fill(color)
+                                        .frame(width: 44, height: 44)
+                                        .overlay(
+                                            Circle()
+                                                .strokeBorder(.white, lineWidth: selectedColor == color ? 3 : 0)
+                                        )
                                 }
                             }
                         }
+                        
+                        // Custom color picker
+                        HStack(spacing: 12) {
+                            Text("Custom")
+                                .font(PigeonTheme.captionFont)
+                                .foregroundStyle(PigeonTheme.secondaryText)
+                            ColorPicker("", selection: $selectedColor, supportsOpacity: false)
+                                .labelsHidden()
+                        }
                     }
                     
-                    try? modelContext.save()
-                    syncSubjectsToCloud()
-                    dismiss()
-                } label: {
-                    Text("Save Changes")
-                        .font(PigeonTheme.subheadlineFont)
-                        .foregroundStyle(PigeonTheme.accentText)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(
-                            name.trimmingCharacters(in: .whitespaces).isEmpty
-                            ? PigeonTheme.elevated
-                            : PigeonTheme.accent
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    // Preview
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(selectedColor)
+                            .frame(width: 14, height: 14)
+                        Text(name.isEmpty ? "Preview" : name)
+                            .font(PigeonTheme.bodyFont)
+                            .foregroundStyle(name.isEmpty ? PigeonTheme.tertiaryText : PigeonTheme.primaryText)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(PigeonTheme.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    
+                    // Save button
+                    Button {
+                        Haptics.medium()
+                        let newName = name.trimmingCharacters(in: .whitespaces)
+                        let oldName = subject.name
+                        
+                        // Update the subject itself
+                        subject.name = newName
+                        subject.colorHex = selectedColor.hexString
+                        
+                        // Cascade rename to all timelapse records that reference the old name
+                        if oldName != newName {
+                            let descriptor = FetchDescriptor<StudyTimelapse>()
+                            if let allTimelapses = try? modelContext.fetch(descriptor) {
+                                for timelapse in allTimelapses {
+                                    // Update legacy subject field
+                                    if timelapse.subject == oldName {
+                                        timelapse.subject = newName
+                                    }
+                                    // Update subject segments JSON
+                                    var segments = timelapse.subjectSegments
+                                    var changed = false
+                                    for i in segments.indices where segments[i].subject == oldName {
+                                        segments[i] = SubjectSegment(subject: newName, seconds: segments[i].seconds)
+                                        changed = true
+                                    }
+                                    if changed {
+                                        timelapse.subjectSegments = segments
+                                    }
+                                }
+                            }
+                        }
+                        
+                        try? modelContext.save()
+                        syncSubjectsToCloud()
+                        dismiss()
+                    } label: {
+                        Text("Save Changes")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.accentText)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                name.trimmingCharacters(in: .whitespaces).isEmpty
+                                ? PigeonTheme.elevated
+                                : PigeonTheme.accent
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                .padding(16)
             }
-            .padding(16)
+            .scrollDismissesKeyboard(.interactively)
             .background(PigeonTheme.background)
             .onTapGesture {
                 UIApplication.shared.sendAction(
@@ -368,100 +369,101 @@ struct AddSubjectView: View {
     
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 24) {
-                // Name
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Subject Name")
-                        .font(PigeonTheme.subheadlineFont)
-                        .foregroundStyle(PigeonTheme.primaryText)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // Name
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Subject Name")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        
+                        TextField("e.g. Economics", text: $name)
+                            .font(PigeonTheme.bodyFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                            .padding(14)
+                            .background(PigeonTheme.cardBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
                     
-                    TextField("e.g. Economics", text: $name)
-                        .font(PigeonTheme.bodyFont)
-                        .foregroundStyle(PigeonTheme.primaryText)
-                        .padding(14)
-                        .background(PigeonTheme.cardBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                
-                // Color selection
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Color")
-                        .font(PigeonTheme.subheadlineFont)
-                        .foregroundStyle(PigeonTheme.primaryText)
-                    
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
-                        ForEach(presetColors, id: \.0) { colorName, color in
-                            Button {
-                                Haptics.selection()
-                                selectedColor = color
-                            } label: {
-                                Circle()
-                                    .fill(color)
-                                    .frame(width: 44, height: 44)
-                                    .overlay(
-                                        Circle()
-                                            .strokeBorder(.white, lineWidth: selectedColor == color ? 3 : 0)
-                                    )
+                    // Color selection
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Color")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.primaryText)
+                        
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
+                            ForEach(presetColors, id: \.0) { colorName, color in
+                                Button {
+                                    Haptics.selection()
+                                    selectedColor = color
+                                } label: {
+                                    Circle()
+                                        .fill(color)
+                                        .frame(width: 44, height: 44)
+                                        .overlay(
+                                            Circle()
+                                                .strokeBorder(.white, lineWidth: selectedColor == color ? 3 : 0)
+                                        )
+                                }
                             }
+                        }
+                        
+                        // Custom color picker
+                        HStack(spacing: 12) {
+                            Text("Custom")
+                                .font(PigeonTheme.captionFont)
+                                .foregroundStyle(PigeonTheme.secondaryText)
+                            ColorPicker("", selection: $selectedColor, supportsOpacity: false)
+                                .labelsHidden()
                         }
                     }
                     
-                    // Custom color picker
-                    HStack(spacing: 12) {
-                        Text("Custom")
-                            .font(PigeonTheme.captionFont)
-                            .foregroundStyle(PigeonTheme.secondaryText)
-                        ColorPicker("", selection: $selectedColor, supportsOpacity: false)
-                            .labelsHidden()
+                    // Preview
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(selectedColor)
+                            .frame(width: 14, height: 14)
+                        Text(name.isEmpty ? "Preview" : name)
+                            .font(PigeonTheme.bodyFont)
+                            .foregroundStyle(name.isEmpty ? PigeonTheme.tertiaryText : PigeonTheme.primaryText)
                     }
-                }
-                
-                // Preview
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(selectedColor)
-                        .frame(width: 14, height: 14)
-                    Text(name.isEmpty ? "Preview" : name)
-                        .font(PigeonTheme.bodyFont)
-                        .foregroundStyle(name.isEmpty ? PigeonTheme.tertiaryText : PigeonTheme.primaryText)
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(PigeonTheme.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                
-                Spacer()
-                
-                // Save button
-                Button {
-                    Haptics.medium()
-                    let nextOrder = (subjects.last?.sortOrder ?? 0) + 1
-                    let subject = StudySubject(
-                        name: name,
-                        colorHex: selectedColor.hexString,
-                        isUserCreated: true,
-                        sortOrder: nextOrder
-                    )
-                    modelContext.insert(subject)
-                    try? modelContext.save()
-                    syncSubjectsToCloud()
-                    dismiss()
-                } label: {
-                    Text("Add Subject")
-                        .font(PigeonTheme.subheadlineFont)
-                        .foregroundStyle(PigeonTheme.accentText)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(
-                            name.trimmingCharacters(in: .whitespaces).isEmpty
-                            ? PigeonTheme.elevated
-                            : PigeonTheme.accent
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(PigeonTheme.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    
+                    // Save button
+                    Button {
+                        Haptics.medium()
+                        let nextOrder = (subjects.last?.sortOrder ?? 0) + 1
+                        let subject = StudySubject(
+                            name: name,
+                            colorHex: selectedColor.hexString,
+                            isUserCreated: true,
+                            sortOrder: nextOrder
                         )
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        modelContext.insert(subject)
+                        try? modelContext.save()
+                        syncSubjectsToCloud()
+                        dismiss()
+                    } label: {
+                        Text("Add Subject")
+                            .font(PigeonTheme.subheadlineFont)
+                            .foregroundStyle(PigeonTheme.accentText)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                name.trimmingCharacters(in: .whitespaces).isEmpty
+                                ? PigeonTheme.elevated
+                                : PigeonTheme.accent
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                .padding(16)
             }
-            .padding(16)
+            .scrollDismissesKeyboard(.interactively)
             .background(PigeonTheme.background)
             .onTapGesture {
                 UIApplication.shared.sendAction(

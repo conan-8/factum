@@ -23,10 +23,17 @@ struct StudyActivityWidget: Widget {
                         .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(formatTime(context.state.elapsedSeconds))
-                        .font(.system(size: 20, weight: .light, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .contentTransition(.numericText())
+                    if !context.state.isPaused, let timerStart = context.state.timerStartDate {
+                        Text(timerStart, style: .timer)
+                            .font(.system(size: 20, weight: .light, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.trailing)
+                    } else {
+                        Text(formatTime(context.state.elapsedSeconds))
+                            .font(.system(size: 20, weight: .light, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .contentTransition(.numericText())
+                    }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     HStack {
@@ -50,10 +57,17 @@ struct StudyActivityWidget: Widget {
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.7))
             } compactTrailing: {
-                Text(formatTime(context.state.elapsedSeconds))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .contentTransition(.numericText())
+                if !context.state.isPaused, let timerStart = context.state.timerStartDate {
+                    Text(timerStart, style: .timer)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.trailing)
+                } else {
+                    Text(formatTime(context.state.elapsedSeconds))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .contentTransition(.numericText())
+                }
             } minimal: {
                 Image(systemName: "timer")
                     .font(.system(size: 12))
@@ -80,10 +94,17 @@ struct StudyActivityWidget: Widget {
 
             Spacer()
 
-            Text(formatTime(context.state.elapsedSeconds))
-                .font(.system(size: 28, weight: .light, design: .monospaced))
-                .foregroundStyle(.white)
-                .contentTransition(.numericText())
+            if !context.state.isPaused, let timerStart = context.state.timerStartDate {
+                Text(timerStart, style: .timer)
+                    .font(.system(size: 28, weight: .light, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.trailing)
+            } else {
+                Text(formatTime(context.state.elapsedSeconds))
+                    .font(.system(size: 28, weight: .light, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

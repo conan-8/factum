@@ -127,6 +127,7 @@ enum TimerMode: String, CaseIterable, Identifiable, Sendable {
     case continuous = "Continuous"
     case pomodoro = "Pomodoro"
     case setTime = "Set Time"
+    case carrierPigeon = "Carrier Pigeon"
     
     var id: String { rawValue }
     
@@ -135,6 +136,7 @@ enum TimerMode: String, CaseIterable, Identifiable, Sendable {
         case .continuous: return "infinity"
         case .pomodoro: return "timer"
         case .setTime: return "clock"
+        case .carrierPigeon: return "bird"
         }
     }
 }
@@ -179,6 +181,13 @@ struct SessionSnapshot: Codable {
     let isLandscape: Bool
     let rawVideoFileName: String?
     let savedAt: Date
+    let pigeonOrigin: String?
+    let pigeonDestination: String?
+    let pigeonActualSeconds: Int?
+    /// True when the session was intentionally backgrounded (user left the app
+    /// without lock mode). When the app relaunches with a backgrounded snapshot,
+    /// the session should be offered for resumption rather than auto-recovered.
+    let wasBackgrounded: Bool?
     
     struct SubjectSegmentSnapshot: Codable {
         let subject: String
@@ -252,7 +261,7 @@ final class TimelapseCaptureManager {
     var pomodoroMaxCycles: Int = 0  // 0 means infinite
     var isOnBreak = false
     /// Accumulated break seconds during this pomodoro session (excluded from stats).
-    private(set) var totalBreakSeconds: Int = 0
+    var totalBreakSeconds: Int = 0
     private var breakPhaseStartDate: Date?
     
     /// Study time only — excludes pomodoro break time.
@@ -270,6 +279,10 @@ final class TimelapseCaptureManager {
     
     // MARK: Set time countdown
     var countdownSecondsRemaining: Int = 0
+    
+    // MARK: Carrier Pigeon mode
+    var selectedFlight: PigeonFlight?
+    var pigeonProgress: Double = 0   // 0.0 to 1.0
     
     // MARK: Zoom
     /// The device's actual videoZoomFactor — NOT the display value.
@@ -328,11 +341,25 @@ final class TimelapseCaptureManager {
     /// instead of relying on Timer tick counts, which drift over long sessions.
     private var recordingStartDate: Date?
     /// Seconds already counted before the current start (used when resuming from background)
-    private var elapsedBeforeCurrentStart: Int = 0
+    var elapsedBeforeCurrentStart: Int = 0
     
     // MARK: Background support
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var backgroundDate: Date?
+    
+    // MARK: Progressive timelapse building
+    /// Pre-built timelapse chunks processed during recording. At export time,
+    /// these are concatenated with the final (short) chunk for near-instant export.
+    private var prebuiltChunks: [URL] = []
+    /// Total raw seconds that have already been processed into prebuilt chunks.
+    /// Used to compute the correct speed-up ratio for the final chunk.
+    private var prebuiltRawSeconds: Double = 0
+    /// Timer that periodically triggers chunk processing during recording.
+    private var chunkTimer: Timer?
+    /// How often (in seconds of recording) to process a chunk.
+    private let chunkIntervalSeconds: TimeInterval = 300 // every 5 minutes
+    /// Whether a chunk is currently being processed in the background.
+    private var isProcessingChunk = false
     
     // MARK: - Setup
     
@@ -653,6 +680,7 @@ final class TimelapseCaptureManager {
         configureConnectionOrientation()
         
         // Set up timer-specific state
+        pigeonProgress = 0
         switch timerMode {
         case .continuous:
             break
@@ -661,6 +689,10 @@ final class TimelapseCaptureManager {
             pomodoroPhase = .study
         case .setTime:
             countdownSecondsRemaining = setTimeDurationMinutes * 60
+        case .carrierPigeon:
+            if let flight = selectedFlight {
+                countdownSecondsRemaining = flight.actualSeconds
+            }
         }
         
         // Start continuous video recording
@@ -692,6 +724,11 @@ final class TimelapseCaptureManager {
                 self?.tick()
             }
         }
+        
+        // Start progressive timelapse chunk timer
+        prebuiltChunks = []
+        prebuiltRawSeconds = 0
+        startChunkTimer()
         
         // Initial snapshot so even very short sessions are recoverable
         snapshotTickCounter = 0
@@ -735,6 +772,7 @@ final class TimelapseCaptureManager {
         recordingOrientation = detectedOrientation
         
         // Set up timer-specific state
+        pigeonProgress = 0
         switch timerMode {
         case .continuous:
             break
@@ -743,6 +781,10 @@ final class TimelapseCaptureManager {
             pomodoroPhase = .study
         case .setTime:
             countdownSecondsRemaining = setTimeDurationMinutes * 60
+        case .carrierPigeon:
+            if let flight = selectedFlight {
+                countdownSecondsRemaining = flight.actualSeconds
+            }
         }
         
         // No video recording — just the tick timer
@@ -817,6 +859,17 @@ final class TimelapseCaptureManager {
                 playAlertSound()
                 stopRecording()
             }
+            
+        case .carrierPigeon:
+            countdownSecondsRemaining -= 1
+            if let flight = selectedFlight, flight.actualSeconds > 0 {
+                pigeonProgress = min(1.0, Double(elapsedSeconds) / Double(flight.actualSeconds))
+            }
+            if countdownSecondsRemaining <= 0 {
+                pigeonProgress = 1.0
+                playAlertSound()
+                stopRecording()
+            }
         }
     }
     
@@ -847,6 +900,7 @@ final class TimelapseCaptureManager {
         
         elapsedTimer?.invalidate()
         elapsedTimer = nil
+        stopChunkTimer()
         
         // Re-sync the connection to the current physical orientation
         configureConnectionOrientation()
@@ -900,7 +954,7 @@ final class TimelapseCaptureManager {
     private var snapshotTickCounter: Int = 0
     
     /// Persist the current session state to disk so it survives a crash or force-quit.
-    func saveSessionSnapshot() {
+    func saveSessionSnapshot(wasBackgrounded: Bool = false) {
         let snapshot = SessionSnapshot(
             sessionID: rawVideoURL?.lastPathComponent ?? UUID().uuidString,
             startDate: recordingStartDate ?? Date().addingTimeInterval(-Double(elapsedSeconds)),
@@ -913,7 +967,11 @@ final class TimelapseCaptureManager {
             timerMode: timerMode.rawValue,
             isLandscape: isLandscape,
             rawVideoFileName: rawVideoURL?.lastPathComponent,
-            savedAt: Date()
+            savedAt: Date(),
+            pigeonOrigin: selectedFlight?.origin.name,
+            pigeonDestination: selectedFlight?.destination.name,
+            pigeonActualSeconds: selectedFlight?.actualSeconds,
+            wasBackgrounded: wasBackgrounded
         )
         snapshot.save()
     }
@@ -1001,54 +1059,447 @@ final class TimelapseCaptureManager {
         }
     }
     
+    // MARK: - Progressive Chunk Building
+    
+    /// Starts a repeating timer that triggers chunk processing during recording.
+    private func startChunkTimer() {
+        chunkTimer?.invalidate()
+        guard recordingMode == .timelapse else { return }
+        chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkIntervalSeconds, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                await self?.processCurrentChunk()
+            }
+        }
+    }
+    
+    /// Stops the chunk timer.
+    private func stopChunkTimer() {
+        chunkTimer?.invalidate()
+        chunkTimer = nil
+    }
+    
+    /// Processes the current raw recording segment into a sped-up timelapse
+    /// chunk. Stops the current movie recording, processes it, then starts
+    /// a new recording segment — all without interrupting the user's timer.
+    private func processCurrentChunk() async {
+        guard isRecording, !isPaused, !isProcessingChunk,
+              recordingMode == .timelapse,
+              let movieOutput, movieOutput.isRecording else { return }
+        
+        isProcessingChunk = true
+        
+        // Stop the current movie recording to finalize the file
+        movieOutput.stopRecording()
+        
+        // Wait for the delegate to fire so the file is fully written
+        await withCheckedContinuation { continuation in
+            recordingFinishedContinuation = continuation
+        }
+        
+        // Grab the completed segment URL
+        guard let segmentURL = rawVideoURL,
+              FileManager.default.fileExists(atPath: segmentURL.path) else {
+            isProcessingChunk = false
+            // Start a new segment anyway
+            startNewRecordingSegment()
+            return
+        }
+        
+        // Process this segment into a timelapse chunk off the main thread
+        let chunkURL = await processSegmentIntoChunk(segmentURL: segmentURL)
+        
+        if let chunkURL {
+            prebuiltChunks.append(chunkURL)
+            print("[CHUNK] Processed chunk #\(prebuiltChunks.count): \(chunkURL.lastPathComponent)")
+        }
+        
+        // Clean up the raw segment
+        try? FileManager.default.removeItem(at: segmentURL)
+        rawVideoURL = nil
+        
+        // Start a fresh recording segment
+        startNewRecordingSegment()
+        isProcessingChunk = false
+    }
+    
+    /// Processes a single raw video segment into a sped-up timelapse chunk.
+    /// Returns the URL of the processed chunk, or nil on failure.
+    private func processSegmentIntoChunk(segmentURL: URL) async -> URL? {
+        let asset = AVURLAsset(url: segmentURL, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+        
+        guard let rawDuration = try? await asset.load(.duration),
+              rawDuration.seconds > 1,
+              let videoTrack = try? await asset.loadTracks(withMediaType: .video).first else {
+            return nil
+        }
+        
+        let rawSeconds = rawDuration.seconds
+        prebuiltRawSeconds += rawSeconds
+        
+        // Calculate speed-up: target ~15-20s total timelapse. Each chunk
+        // gets the same speed-up ratio so they stitch together seamlessly.
+        // We estimate total raw time as elapsed seconds (approximately).
+        let estimatedTotalRaw = max(Double(elapsedSeconds), prebuiltRawSeconds + 60)
+        let targetTotalSeconds: Double = min(20.0, max(15.0, 15.0 + (estimatedTotalRaw - 600.0) / 600.0 * 5.0))
+        let speedup = estimatedTotalRaw / targetTotalSeconds
+        let chunkTargetDuration = rawSeconds / speedup
+        let targetDuration = CMTime(seconds: max(0.5, chunkTargetDuration), preferredTimescale: 600)
+        
+        // Build composition
+        let composition = AVMutableComposition()
+        guard let compTrack = composition.addMutableTrack(
+            withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else { return nil }
+        
+        do {
+            try compTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: rawDuration),
+                of: videoTrack,
+                at: .zero
+            )
+        } catch {
+            print("[CHUNK] Insert failed: \(error.localizedDescription)")
+            return nil
+        }
+        
+        // Apply transform
+        if let transform = try? await videoTrack.load(.preferredTransform) {
+            compTrack.preferredTransform = transform
+        }
+        
+        // Scale time
+        compTrack.scaleTimeRange(
+            CMTimeRange(start: .zero, duration: rawDuration),
+            toDuration: targetDuration
+        )
+        
+        // Video composition for smooth frame output
+        let naturalSize: CGSize
+        if let transform = try? await videoTrack.load(.preferredTransform),
+           let trackSize = try? await videoTrack.load(.naturalSize) {
+            let transformedSize = trackSize.applying(transform)
+            naturalSize = CGSize(width: abs(transformedSize.width), height: abs(transformedSize.height))
+        } else {
+            naturalSize = outputSize
+        }
+        
+        let mutableComp = AVMutableVideoComposition()
+        mutableComp.frameDuration = CMTime(value: 1, timescale: 30)
+        mutableComp.renderSize = naturalSize
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: targetDuration)
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compTrack)
+        if let transform = try? await videoTrack.load(.preferredTransform) {
+            layerInstruction.setTransform(transform, at: .zero)
+        }
+        instruction.layerInstructions = [layerInstruction]
+        mutableComp.instructions = [instruction]
+        
+        // Export chunk
+        let chunkURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("pigeon_chunk_\(UUID().uuidString).mp4")
+        
+        guard let exportSession = AVAssetExportSession(
+            asset: composition, presetName: AVAssetExportPreset1920x1080
+        ) else { return nil }
+        exportSession.videoComposition = mutableComp
+        
+        do {
+            try await exportSession.export(to: chunkURL, as: .mp4)
+            return chunkURL
+        } catch {
+            print("[CHUNK] Export failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+    
     // MARK: - Export timelapse
     
-    /// Speeds up the raw continuous recording into a ~30-second timelapse
-    /// using AVMutableComposition.  Safe to call multiple times.
-    func exportTimelapse() async -> URL? {
-        if let existing = exportedVideoURL {
-            return existing
-        }
-        guard !isExporting else { return nil }
-        
-        // Wait for the movie file to be fully written before reading it.
-        await waitForRecordingFinished()
-        
-        guard let rawURL = rawVideoURL,
-              FileManager.default.fileExists(atPath: rawURL.path) else { return nil }
-
-        isExporting = true
-
-        let asset = AVURLAsset(url: rawURL)
-        
-        // Load duration and video track
-        guard let duration = try? await asset.load(.duration),
-              duration.seconds > 0 else {
-            isExporting = false
-            return nil
-        }
-        
-        guard let videoTrack = try? await asset.loadTracks(withMediaType: .video).first else {
-            isExporting = false
-            return nil
-        }
-        
-        // Generate thumbnail from first frame before speed-up
+    /// Generate a thumbnail from the first frame of the given asset.
+    private func generateThumbnail(from asset: AVURLAsset) async {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 1080, height: 1920)
         if let cgImage = try? await generator.image(at: .zero).image {
             thumbnailImage = UIImage(cgImage: cgImage)
         }
+    }
+    
+    /// Fast export path when prebuilt timelapse chunks exist. Only the final
+    /// short raw segment needs speed-up processing, then all chunks are
+    /// concatenated into the final output — typically completing in seconds.
+    private func exportWithPrebuiltChunks() async -> URL? {
+        // Process any remaining raw segments into a final chunk
+        var allRawURLs = additionalRawSegments.filter {
+            FileManager.default.fileExists(atPath: $0.path)
+        }
+        if let rawURL = rawVideoURL, FileManager.default.fileExists(atPath: rawURL.path) {
+            allRawURLs.append(rawURL)
+        }
         
-        // Target output: 20-30 seconds depending on raw length.
-        // Short sessions (< 10 min raw) → 20s, scaling up to 30s for longer sessions.
-        // Hard cap at 30 seconds.
-        let rawSeconds = duration.seconds
-        let targetSeconds: Double = min(30.0, max(20.0, 20.0 + (rawSeconds - 600.0) / 600.0 * 10.0))
+        // Generate thumbnail from the first available source
+        if thumbnailImage == nil {
+            let thumbnailSource: URL? = prebuiltChunks.first ?? allRawURLs.first
+            if let source = thumbnailSource {
+                let asset = AVURLAsset(url: source)
+                await generateThumbnail(from: asset)
+            }
+        }
+        
+        // Process any remaining raw segments into a final chunk
+        for segURL in allRawURLs {
+            if let chunkURL = await processSegmentIntoChunk(segmentURL: segURL) {
+                prebuiltChunks.append(chunkURL)
+                print("[EXPORT] Processed final segment into chunk: \(chunkURL.lastPathComponent)")
+            }
+        }
+        
+        // Clean up raw files
+        for segURL in allRawURLs {
+            try? FileManager.default.removeItem(at: segURL)
+        }
+        rawVideoURL = nil
+        additionalRawSegments.removeAll()
+        
+        guard !prebuiltChunks.isEmpty else {
+            isExporting = false
+            return nil
+        }
+        
+        // If only one chunk, just use it directly
+        if prebuiltChunks.count == 1 {
+            let outputURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("pigeon_\(UUID().uuidString).mp4")
+            do {
+                try FileManager.default.moveItem(at: prebuiltChunks[0], to: outputURL)
+                prebuiltChunks.removeAll()
+                isExporting = false
+                exportedVideoURL = outputURL
+                print("[EXPORT] Single chunk — moved directly, export complete")
+                return outputURL
+            } catch {
+                print("[EXPORT] Failed to move single chunk: \(error.localizedDescription)")
+            }
+        }
+        
+        // Concatenate all chunks into the final timelapse video
+        let composition = AVMutableComposition()
+        guard let compTrack = composition.addMutableTrack(
+            withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            isExporting = false
+            return nil
+        }
+        
+        var insertionPoint: CMTime = .zero
+        var referenceTrack: AVAssetTrack?
+        
+        for chunkURL in prebuiltChunks {
+            let asset = AVURLAsset(url: chunkURL)
+            guard let duration = try? await asset.load(.duration),
+                  let track = try? await asset.loadTracks(withMediaType: .video).first else {
+                continue
+            }
+            if referenceTrack == nil { referenceTrack = track }
+            do {
+                try compTrack.insertTimeRange(
+                    CMTimeRange(start: .zero, duration: duration),
+                    of: track,
+                    at: insertionPoint
+                )
+                insertionPoint = CMTimeAdd(insertionPoint, duration)
+            } catch {
+                print("[EXPORT] Failed to insert chunk: \(error.localizedDescription)")
+            }
+        }
+        
+        guard insertionPoint.seconds > 0, let refTrack = referenceTrack else {
+            isExporting = false
+            return nil
+        }
+        
+        // Apply transform from the first chunk
+        if let transform = try? await refTrack.load(.preferredTransform) {
+            compTrack.preferredTransform = transform
+        }
+        
+        // Video composition for smooth playback
+        let naturalSize: CGSize
+        if let transform = try? await refTrack.load(.preferredTransform),
+           let trackSize = try? await refTrack.load(.naturalSize) {
+            let transformedSize = trackSize.applying(transform)
+            naturalSize = CGSize(width: abs(transformedSize.width), height: abs(transformedSize.height))
+        } else {
+            naturalSize = outputSize
+        }
+        
+        // Apply color grading if set
+        let videoComposition: AVVideoComposition
+        if colorGrade != .none, let filterName = colorGrade.ciFilterName {
+            let capturedGrade = colorGrade
+            let ciFilter = CIFilter(name: filterName)!
+            capturedGrade.configure(ciFilter)
+            let handler: @Sendable (AVAsynchronousCIImageFilteringRequest) -> Void = { request in
+                ciFilter.setValue(request.sourceImage, forKey: kCIInputImageKey)
+                if let output = ciFilter.outputImage {
+                    request.finish(with: output, context: nil)
+                } else {
+                    request.finish(with: request.sourceImage, context: nil)
+                }
+            }
+            videoComposition = AVVideoComposition(asset: composition, applyingCIFiltersWithHandler: handler)
+        } else {
+            let mutableComp = AVMutableVideoComposition()
+            mutableComp.frameDuration = CMTime(value: 1, timescale: 30)
+            mutableComp.renderSize = naturalSize
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRange(start: .zero, duration: insertionPoint)
+            let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compTrack)
+            if let transform = try? await refTrack.load(.preferredTransform) {
+                layerInstruction.setTransform(transform, at: .zero)
+            }
+            instruction.layerInstructions = [layerInstruction]
+            mutableComp.instructions = [instruction]
+            videoComposition = mutableComp
+        }
+        
+        let outputURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("pigeon_\(UUID().uuidString).mp4")
+        
+        guard let exportSession = AVAssetExportSession(
+            asset: composition, presetName: AVAssetExportPreset1920x1080
+        ) else {
+            isExporting = false
+            return nil
+        }
+        exportSession.videoComposition = videoComposition
+        exportSession.fileLengthLimit = 50_000_000
+        
+        do {
+            try await exportSession.export(to: outputURL, as: .mp4)
+            print("[EXPORT] Progressive export complete — \(prebuiltChunks.count) chunks concatenated")
+        } catch {
+            print("[EXPORT] Concatenation failed: \(error.localizedDescription)")
+            // Clean up chunks
+            for url in prebuiltChunks { try? FileManager.default.removeItem(at: url) }
+            prebuiltChunks.removeAll()
+            isExporting = false
+            return nil
+        }
+        
+        // Clean up chunk files
+        for url in prebuiltChunks { try? FileManager.default.removeItem(at: url) }
+        prebuiltChunks.removeAll()
+        
+        isExporting = false
+        exportedVideoURL = outputURL
+        return outputURL
+    }
+    
+    /// Speeds up the raw continuous recording into a ~30-second timelapse
+    /// using AVMutableComposition.  Safe to call multiple times.
+    ///
+    /// If progressive chunks were built during recording, only the final
+    /// short segment needs processing — making export near-instant.
+    /// For sessions without prebuilt chunks (short sessions), falls through
+    /// to full-processing.
+    func exportTimelapse() async -> URL? {
+        if let existing = exportedVideoURL {
+            return existing
+        }
+        guard !isExporting else { return nil }
+        
+        stopChunkTimer()
+        
+        // Wait for the movie file to be fully written before reading it.
+        await waitForRecordingFinished()
+        
+        isExporting = true
+        
+        // --- Progressive path: prebuilt chunks exist ---
+        if !prebuiltChunks.isEmpty {
+            let result = await exportWithPrebuiltChunks()
+            if result != nil { return result }
+            // If progressive export failed, fall through to full processing
+            print("[EXPORT] Progressive export failed — falling through to full processing")
+        }
+        
+        // --- Full processing path (short sessions or fallback) ---
+        
+        // Collect all raw segments (additional background segments + current)
+        var allSegmentURLs = additionalRawSegments.filter {
+            FileManager.default.fileExists(atPath: $0.path)
+        }
+        if let rawURL = rawVideoURL, FileManager.default.fileExists(atPath: rawURL.path) {
+            allSegmentURLs.append(rawURL)
+        }
+        
+        guard !allSegmentURLs.isEmpty else {
+            isExporting = false
+            return nil
+        }
+        
+        // Use the first available segment as the primary asset for thumbnail
+        let rawURL = allSegmentURLs.first!
+
+        let firstAsset = AVURLAsset(url: rawURL, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+        
+        // Quick sanity check — at least the first segment must be valid
+        guard let firstDuration = try? await firstAsset.load(.duration),
+              firstDuration.seconds > 0,
+              (try? await firstAsset.loadTracks(withMediaType: .video).first) != nil else {
+            isExporting = false
+            return nil
+        }
+        
+        // Generate thumbnail from first frame before speed-up
+        await generateThumbnail(from: firstAsset)
+        
+        // Compute total raw duration across all segments
+        var totalRawSeconds: Double = 0
+        var segmentAssets: [(asset: AVURLAsset, duration: CMTime, videoTrack: AVAssetTrack)] = []
+        for segURL in allSegmentURLs {
+            let segAsset = AVURLAsset(url: segURL, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+            guard let segDuration = try? await segAsset.load(.duration),
+                  segDuration.seconds > 0,
+                  let segTrack = try? await segAsset.loadTracks(withMediaType: .video).first else {
+                continue
+            }
+            segmentAssets.append((segAsset, segDuration, segTrack))
+            totalRawSeconds += segDuration.seconds
+        }
+        
+        guard !segmentAssets.isEmpty else {
+            isExporting = false
+            return nil
+        }
+        
+        // For very long sessions (> 2 hours total), trim from the beginning
+        // to prevent memory exhaustion.
+        let maxRawSeconds: Double = 7200 // 2 hours
+        if totalRawSeconds > maxRawSeconds {
+            print("[EXPORT] Trimming \(Int(totalRawSeconds))s raw to last \(Int(maxRawSeconds))s for memory safety")
+            // Drop earliest segments until under the cap
+            var toTrim = totalRawSeconds - maxRawSeconds
+            while toTrim > 0 && segmentAssets.count > 1 {
+                let first = segmentAssets.first!
+                if first.duration.seconds <= toTrim {
+                    toTrim -= first.duration.seconds
+                    totalRawSeconds -= first.duration.seconds
+                    segmentAssets.removeFirst()
+                } else {
+                    break
+                }
+            }
+        }
+        
+        // Target output: 15-20 seconds depending on raw length.
+        let effectiveRawSeconds = min(totalRawSeconds, maxRawSeconds)
+        let targetSeconds: Double = min(20.0, max(15.0, 15.0 + (effectiveRawSeconds - 600.0) / 600.0 * 5.0))
         let targetDuration = CMTime(seconds: targetSeconds, preferredTimescale: 600)
         
-        // Create composition with sped-up track
+        // Create composition with all segments inserted sequentially
         let composition = AVMutableComposition()
         guard let compositionTrack = composition.addMutableTrack(
             withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
@@ -1057,23 +1508,34 @@ final class TimelapseCaptureManager {
             return nil
         }
         
-        let timeRange = CMTimeRange(start: .zero, duration: duration)
-        do {
-            try compositionTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
-        } catch {
-            print("[EXPORT] Failed to insert time range: \(error.localizedDescription)")
+        var insertionPoint: CMTime = .zero
+        for seg in segmentAssets {
+            let timeRange = CMTimeRange(start: .zero, duration: seg.duration)
+            do {
+                try compositionTrack.insertTimeRange(timeRange, of: seg.videoTrack, at: insertionPoint)
+                insertionPoint = CMTimeAdd(insertionPoint, seg.duration)
+            } catch {
+                print("[EXPORT] Failed to insert segment: \(error.localizedDescription)")
+                continue
+            }
+        }
+        
+        guard insertionPoint.seconds > 0 else {
             isExporting = false
             return nil
         }
         
         // Preserve the source video's orientation transform so portrait
         // recordings are exported upright instead of sideways.
-        if let transform = try? await videoTrack.load(.preferredTransform) {
+        // Use the first segment's track for the transform reference.
+        let referenceTrack = segmentAssets.first!.videoTrack
+        if let transform = try? await referenceTrack.load(.preferredTransform) {
             compositionTrack.preferredTransform = transform
         }
         
         // Scale time to target duration (this creates the timelapse effect)
-        compositionTrack.scaleTimeRange(timeRange, toDuration: targetDuration)
+        let compositionTimeRange = CMTimeRange(start: .zero, duration: insertionPoint)
+        compositionTrack.scaleTimeRange(compositionTimeRange, toDuration: targetDuration)
         
         // Create a video composition to force smooth frame output.
         // Without this, scaleTimeRange just drops frames — a 60x speedup
@@ -1081,8 +1543,8 @@ final class TimelapseCaptureManager {
         // The video composition re-renders at a steady 30fps, sampling
         // uniformly from the sped-up timeline for buttery smooth output.
         let naturalSize: CGSize
-        if let transform = try? await videoTrack.load(.preferredTransform),
-           let trackSize = try? await videoTrack.load(.naturalSize) {
+        if let transform = try? await referenceTrack.load(.preferredTransform),
+           let trackSize = try? await referenceTrack.load(.naturalSize) {
             // Apply the preferred transform to get the correct orientation
             let transformedSize = trackSize.applying(transform)
             naturalSize = CGSize(width: abs(transformedSize.width),
@@ -1113,7 +1575,7 @@ final class TimelapseCaptureManager {
             let instruction = AVMutableVideoCompositionInstruction()
             instruction.timeRange = CMTimeRange(start: .zero, duration: targetDuration)
             let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionTrack)
-            if let transform = try? await videoTrack.load(.preferredTransform) {
+            if let transform = try? await referenceTrack.load(.preferredTransform) {
                 layerInstruction.setTransform(transform, at: .zero)
             }
             instruction.layerInstructions = [layerInstruction]
@@ -1121,32 +1583,42 @@ final class TimelapseCaptureManager {
             videoComposition = mutableComp
         }
         
-        // Export
+        // Export — use passthrough-friendly preset for speed when no color
+        // grading is applied. Falls back to 1920x1080 if passthrough unavailable.
         let outputURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("pigeon_\(UUID().uuidString).mp4")
         
+        let presetName = AVAssetExportPreset1920x1080
         guard let exportSession = AVAssetExportSession(
-            asset: composition, presetName: AVAssetExportPresetHighestQuality
+            asset: composition, presetName: presetName
         ) else {
             isExporting = false
             return nil
         }
         exportSession.videoComposition = videoComposition
+        // Limit file size for reliability — 50 MB hard cap
+        exportSession.fileLengthLimit = 50_000_000
         
         do {
             try await exportSession.export(to: outputURL, as: .mp4)
         } catch {
             print("[EXPORT] Export failed: \(error.localizedDescription)")
-            // Clean up raw recording even on failure
-            try? FileManager.default.removeItem(at: rawURL)
+            // Clean up raw recordings even on failure
+            for segURL in allSegmentURLs {
+                try? FileManager.default.removeItem(at: segURL)
+            }
             rawVideoURL = nil
+            additionalRawSegments.removeAll()
             isExporting = false
             return nil
         }
         
-        // Clean up raw recording to free disk space
-        try? FileManager.default.removeItem(at: rawURL)
+        // Clean up all raw recording segments to free disk space
+        for segURL in allSegmentURLs {
+            try? FileManager.default.removeItem(at: segURL)
+        }
         rawVideoURL = nil
+        additionalRawSegments.removeAll()
         
         isExporting = false
         exportedVideoURL = outputURL
@@ -1170,6 +1642,7 @@ final class TimelapseCaptureManager {
     
     private func cleanupInternal() {
         stopRecording()
+        stopChunkTimer()
         recordingOrientation = nil
         recordingStartDate = nil
         elapsedBeforeCurrentStart = 0
@@ -1179,11 +1652,21 @@ final class TimelapseCaptureManager {
         subjectSegmentStart = nil
         stopOrientationDetection()
         endBackgroundTask()
-        // Clean up any raw recording file
+        // Clean up any raw recording files (including background segments)
+        for segURL in additionalRawSegments {
+            try? FileManager.default.removeItem(at: segURL)
+        }
+        additionalRawSegments.removeAll()
         if let rawURL = rawVideoURL {
             try? FileManager.default.removeItem(at: rawURL)
             rawVideoURL = nil
         }
+        // Clean up any prebuilt timelapse chunks
+        for chunkURL in prebuiltChunks {
+            try? FileManager.default.removeItem(at: chunkURL)
+        }
+        prebuiltChunks.removeAll()
+        prebuiltRawSeconds = 0
         captureSession.stopRunning()
     }
     
@@ -1205,13 +1688,20 @@ final class TimelapseCaptureManager {
         // Stop timers — they won't fire in the background anyway
         elapsedTimer?.invalidate()
         elapsedTimer = nil
+        stopChunkTimer()
         
-        // Pause movie recording when entering background — the system will
-        // interrupt the capture session anyway, and pausing ensures we get
-        // a clean file without gaps or corruption.
-        if let movieOutput, movieOutput.isRecording, !movieOutput.isRecordingPaused {
-            movieOutput.pauseRecording()
+        // For timelapse mode: stop the movie recording cleanly before the
+        // system interrupts the capture session. This guarantees the raw file
+        // is fully written and usable. We'll start a NEW recording segment
+        // when the app returns to foreground.
+        if recordingMode == .timelapse, let movieOutput, movieOutput.isRecording {
+            movieOutput.stopRecording()
         }
+        
+        // Save a snapshot marked as intentionally backgrounded. If the app
+        // is killed while backgrounded and relaunched, this flag tells the
+        // recovery system to offer session resumption instead of auto-saving.
+        saveSessionSnapshot(wasBackgrounded: true)
         
         // Request background time to keep the session alive as long as possible
         backgroundTaskID = UIApplication.shared.beginBackgroundTask { [weak self] in
@@ -1221,6 +1711,10 @@ final class TimelapseCaptureManager {
             }
         }
     }
+    
+    /// Additional raw video segments recorded after returning from background.
+    /// These are merged with the primary rawVideoURL at export time.
+    private var additionalRawSegments: [URL] = []
     
     /// Called when the app returns to the foreground
     func handleEnterForeground() {
@@ -1235,11 +1729,6 @@ final class TimelapseCaptureManager {
         elapsedBeforeCurrentStart += secondsInBackground
         recordingStartDate = Date()
         elapsedSeconds = elapsedBeforeCurrentStart
-        
-        // Resume movie recording if it was paused for background
-        if let movieOutput, movieOutput.isRecordingPaused {
-            movieOutput.resumeRecording()
-        }
         
         // Update timer-specific countdowns
         switch timerMode {
@@ -1291,6 +1780,18 @@ final class TimelapseCaptureManager {
                 stopRecording()
                 return
             }
+        case .carrierPigeon:
+            countdownSecondsRemaining -= secondsInBackground
+            if let flight = selectedFlight, flight.actualSeconds > 0 {
+                pigeonProgress = min(1.0, Double(elapsedSeconds) / Double(flight.actualSeconds))
+            }
+            if countdownSecondsRemaining <= 0 {
+                countdownSecondsRemaining = 0
+                pigeonProgress = 1.0
+                playAlertSound()
+                stopRecording()
+                return
+            }
         }
         
         // Restart elapsed timer
@@ -1301,17 +1802,63 @@ final class TimelapseCaptureManager {
             }
         }
         
-        // Restart the capture session if it was interrupted — but only for
-        // timelapse mode where video capture is active.  In photo timer mode
-        // the session was deliberately stopped to save battery.
-        if recordingMode == .timelapse && !captureSession.isRunning {
+        // Restart the progressive chunk timer
+        startChunkTimer()
+        
+        // Restart the capture session and start a NEW recording segment.
+        // The previous segment was cleanly stopped in handleEnterBackground,
+        // so we need a fresh file. The segments are merged at export time.
+        if recordingMode == .timelapse {
             let session = captureSession
-            Task.detached {
-                session.startRunning()
+            Task.detached { [weak self] in
+                if !session.isRunning {
+                    session.startRunning()
+                }
+                // Small delay for capture session to stabilize
+                try? await Task.sleep(for: .milliseconds(500))
+                await MainActor.run {
+                    self?.startNewRecordingSegment()
+                }
             }
         }
         
         endBackgroundTask()
+    }
+    
+    /// Starts a new movie recording segment after returning from background.
+    /// The old segment is preserved and all segments are merged at export time.
+    private func startNewRecordingSegment() {
+        guard let movieOutput, !movieOutput.isRecording else { return }
+        
+        // Save the old rawVideoURL as an additional segment
+        if let oldURL = rawVideoURL, FileManager.default.fileExists(atPath: oldURL.path) {
+            additionalRawSegments.append(oldURL)
+        }
+        
+        // Create a new file for the next segment
+        let sessionID = UUID().uuidString
+        let docsDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        let newURL = docsDir.appendingPathComponent("pigeon_raw_\(sessionID).mov")
+        rawVideoURL = newURL
+        
+        let delegate = MovieRecordingDelegate()
+        delegate.onFinished = { [weak self] url, error in
+            if let error {
+                print("[CAPTURE] Segment recording finished with error: \(error.localizedDescription)")
+            }
+            Task { @MainActor [weak self] in
+                self?.rawVideoURL = url
+                self?.recordingFinishedContinuation?.resume()
+                self?.recordingFinishedContinuation = nil
+            }
+        }
+        movieRecordingDelegate = delegate
+        
+        // Re-apply the locked orientation to the new connection
+        configureConnectionOrientation()
+        
+        movieOutput.startRecording(to: newURL, recordingDelegate: delegate)
+        print("[CAPTURE] Started new recording segment: \(newURL.lastPathComponent)")
     }
     
     private func endBackgroundTask() {

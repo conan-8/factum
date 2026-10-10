@@ -11,12 +11,17 @@ import SwiftData
 
 // MARK: - Codable Row Types (map 1:1 to Supabase tables)
 
+/// Explicit column list for the users table — never use select("*").
+/// Excludes `email` so anon-key reads cannot harvest addresses.
+enum UserFields {
+    static let all = "uid,display_name,username,avatar_url,bio,join_date,total_study_minutes,streak_days,friend_uids,pending_friend_request_uids,subjects,last_seen_at,is_studying,current_subject,is_private"
+}
+
 struct UserRow: Codable, Identifiable, Sendable {
     var id: UUID { uid }
     let uid: UUID
     var displayName: String
     var username: String?
-    var email: String
     var avatarUrl: String?
     var bio: String
     var joinDate: Date
@@ -34,7 +39,6 @@ struct UserRow: Codable, Identifiable, Sendable {
         case uid
         case displayName = "display_name"
         case username
-        case email
         case avatarUrl = "avatar_url"
         case bio
         case joinDate = "join_date"
@@ -74,6 +78,7 @@ struct StudyGroupRow: Codable, Sendable {
     var memberUids: [String]
     var iconName: String
     var createdAt: Date
+    var wallpaperConfig: String?
     
     enum CodingKeys: String, CodingKey {
         case id, name, description
@@ -81,6 +86,7 @@ struct StudyGroupRow: Codable, Sendable {
         case memberUids = "member_uids"
         case iconName = "icon_name"
         case createdAt = "created_at"
+        case wallpaperConfig = "wallpaper_config"
     }
 }
 
@@ -121,6 +127,9 @@ struct TimelapseRow: Codable, Sendable {
     var appLeaveCount: Int?
     var offTaskSeconds: Int?
     var subjectSegmentsJson: String?
+    var pigeonOrigin: String?
+    var pigeonDestination: String?
+    var descriptionRarity: String?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -141,6 +150,9 @@ struct TimelapseRow: Codable, Sendable {
         case appLeaveCount = "app_leave_count"
         case offTaskSeconds = "off_task_seconds"
         case subjectSegmentsJson = "subject_segments_json"
+        case pigeonOrigin = "pigeon_origin"
+        case pigeonDestination = "pigeon_destination"
+        case descriptionRarity = "description_rarity"
     }
     
     func encode(to encoder: Encoder) throws {
@@ -160,13 +172,12 @@ struct TimelapseRow: Codable, Sendable {
         try container.encode(commentCount, forKey: .commentCount)
         try container.encodeIfPresent(videoDownloadUrl, forKey: .videoDownloadUrl)
         try container.encodeIfPresent(thumbnailDownloadUrl, forKey: .thumbnailDownloadUrl)
-        // NOTE: appLeaveCount, offTaskSeconds, and subjectSegmentsJson
-        // are intentionally omitted from encoding. They require matching
-        // columns in the Supabase timelapses table. Once the columns are
-        // added, uncomment the lines below.
-        // try container.encodeIfPresent(appLeaveCount, forKey: .appLeaveCount)
-        // try container.encodeIfPresent(offTaskSeconds, forKey: .offTaskSeconds)
-        // try container.encodeIfPresent(subjectSegmentsJson, forKey: .subjectSegmentsJson)
+        try container.encodeIfPresent(appLeaveCount, forKey: .appLeaveCount)
+        try container.encodeIfPresent(offTaskSeconds, forKey: .offTaskSeconds)
+        try container.encodeIfPresent(subjectSegmentsJson, forKey: .subjectSegmentsJson)
+        try container.encodeIfPresent(pigeonOrigin, forKey: .pigeonOrigin)
+        try container.encodeIfPresent(pigeonDestination, forKey: .pigeonDestination)
+        try container.encodeIfPresent(descriptionRarity, forKey: .descriptionRarity)
     }
 }
 
@@ -222,7 +233,6 @@ final class SupabaseService: Sendable {
             uid: uid,
             displayName: profile.displayName,
             username: profile.username,
-            email: profile.email,
             avatarUrl: profile.avatarURL,
             bio: profile.bio,
             joinDate: profile.joinDate,
@@ -233,7 +243,7 @@ final class SupabaseService: Sendable {
             isPrivate: profile.isPrivate
         )
         
-        try await supabase.from("users").upsert(row).execute()
+        try await supabase.from("users").upsert(row, returning: .minimal).execute()
     }
     
     /// Fetch a user profile by UID.
@@ -241,7 +251,7 @@ final class SupabaseService: Sendable {
         guard let uuid = UUID(uuidString: uid) else { return nil }
         
         let response: UserRow? = try? await supabase.from("users")
-            .select()
+            .select(UserFields.all)
             .eq("uid", value: uuid)
             .single()
             .execute()
@@ -254,7 +264,7 @@ final class SupabaseService: Sendable {
     func searchUsers(query: String, limit: Int = 20) async throws -> [UserRow] {
         let cleaned = query.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "@"))
         let response: [UserRow] = try await supabase.from("users")
-            .select()
+            .select(UserFields.all)
             .or("display_name.ilike.\(cleaned)%,username.ilike.\(cleaned)%")
             .limit(limit)
             .execute()
@@ -292,15 +302,36 @@ final class SupabaseService: Sendable {
             thumbnailDownloadUrl: timelapse.thumbnailDownloadURL,
             appLeaveCount: timelapse.appLeaveCount,
             offTaskSeconds: timelapse.offTaskSeconds,
-            subjectSegmentsJson: timelapse.subjectSegmentsJSON
+            subjectSegmentsJson: timelapse.subjectSegmentsJSON,
+            pigeonOrigin: timelapse.pigeonOrigin,
+            pigeonDestination: timelapse.pigeonDestination,
+            descriptionRarity: timelapse.descriptionRarity
         )
         
-        try await supabase.from("timelapses").upsert(row).execute()
+        do {
+            try await supabase.from("timelapses").upsert(row).execute()
+        } catch {
+            print("[SYNC] ❌ saveTimelapse FAILED for \(timelapse.id.uuidString.prefix(8)): \(error)")
+            throw error
+        }
     }
     
     /// Save a pre-built timelapse row to Supabase (avoids @Model access off main actor).
     func saveTimelapseRow(_ row: TimelapseRow) async throws {
-        try await supabase.from("timelapses").upsert(row).execute()
+        do {
+            try await supabase.from("timelapses").upsert(row).execute()
+        } catch {
+            print("[SYNC] ❌ saveTimelapseRow FAILED for \(row.id.uuidString.prefix(8)): \(error)")
+            throw error
+        }
+    }
+    
+    /// Update caption and description for a timelapse on Supabase.
+    func updateTimelapseText(id: UUID, caption: String, studyDescription: String) async throws {
+        try await supabase.from("timelapses")
+            .update(["caption": caption, "study_description": studyDescription])
+            .eq("id", value: id)
+            .execute()
     }
     
     /// Delete a timelapse and its comments from Supabase.
@@ -379,10 +410,11 @@ final class SupabaseService: Sendable {
 
     /// Fetch recent timelapses from public accounts (for the public feed).
     func fetchPublicFeed(excludeUID: String, limit: Int = 50) async throws -> [TimelapseRow] {
-        // Get public user UIDs (all users are public unless is_private is set)
+        // Get public user UIDs — exclude private accounts and the current user
         let publicUsers: [UserRow] = try await supabase.from("users")
-            .select()
+            .select(UserFields.all)
             .neq("uid", value: UUID(uuidString: excludeUID) ?? UUID())
+            .neq("is_private", value: true)
             .execute()
             .value
 
@@ -463,7 +495,7 @@ final class SupabaseService: Sendable {
             currentSubject: currentSubject
         )
         _ = try? await supabase.from("users")
-            .update(update)
+            .update(update, returning: .minimal)
             .eq("uid", value: uuid)
             .execute()
     }
@@ -478,7 +510,7 @@ final class SupabaseService: Sendable {
         guard !uids.isEmpty else { return [] }
         let uuids = uids.compactMap { UUID(uuidString: $0) }
         let response: [UserRow] = try await supabase.from("users")
-            .select()
+            .select(UserFields.all)
             .in("uid", values: uuids)
             .execute()
             .value
@@ -554,7 +586,8 @@ final class SupabaseService: Sendable {
             creatorUid: group.creatorID,
             memberUids: group.memberIDs,
             iconName: group.iconName,
-            createdAt: group.createdAt
+            createdAt: group.createdAt,
+            wallpaperConfig: nil
         )
         try await supabase.from("study_groups").insert(row).execute()
     }
@@ -621,12 +654,20 @@ final class SupabaseService: Sendable {
             .execute()
     }
     
+    /// Update a group's wallpaper config JSON.
+    func updateGroupWallpaper(groupID: UUID, configJSON: String) async throws {
+        try await supabase.from("study_groups")
+            .update(["wallpaper_config": configJSON])
+            .eq("id", value: groupID)
+            .execute()
+    }
+    
     /// Fetch leaderboard data for group members sorted by study time.
     func fetchGroupLeaderboard(memberUIDs: [String]) async throws -> [UserRow] {
         guard !memberUIDs.isEmpty else { return [] }
         let uuids = memberUIDs.compactMap { UUID(uuidString: $0) }
         let response: [UserRow] = try await supabase.from("users")
-            .select()
+            .select(UserFields.all)
             .in("uid", values: uuids)
             .order("total_study_minutes", ascending: false)
             .execute()
@@ -662,7 +703,7 @@ final class SupabaseService: Sendable {
         }
         
         try await supabase.from("users")
-            .update(["subjects": subjectDicts])
+            .update(["subjects": subjectDicts], returning: .minimal)
             .eq("uid", value: uuid)
             .execute()
     }
@@ -811,6 +852,9 @@ final class SupabaseService: Sendable {
                         if let cloudSegments = row.subjectSegmentsJson, existing.subjectSegmentsJSON == nil {
                             existing.subjectSegmentsJSON = cloudSegments
                         }
+                        if existing.pigeonOrigin == nil { existing.pigeonOrigin = row.pigeonOrigin }
+                        if existing.pigeonDestination == nil { existing.pigeonDestination = row.pigeonDestination }
+                        if existing.descriptionRarity == nil { existing.descriptionRarity = row.descriptionRarity }
                         existing.cloudSynced = true  // confirmed in cloud
                         // Queue thumbnail download if missing locally
                         if existing.thumbnailData == nil,
@@ -841,6 +885,9 @@ final class SupabaseService: Sendable {
                     timelapse.appLeaveCount = row.appLeaveCount ?? 0
                     timelapse.offTaskSeconds = row.offTaskSeconds ?? 0
                     timelapse.subjectSegmentsJSON = row.subjectSegmentsJson
+                    timelapse.pigeonOrigin = row.pigeonOrigin
+                    timelapse.pigeonDestination = row.pigeonDestination
+                    timelapse.descriptionRarity = row.descriptionRarity
                     // Queue thumbnail download
                     if let thumbURL = row.thumbnailDownloadUrl,
                        let thumbRemoteURL = URL(string: thumbURL) {
@@ -933,7 +980,6 @@ final class SupabaseService: Sendable {
         if let profile = existing {
             if let row = userRow {
                 profile.displayName = row.displayName
-                profile.email = row.email
                 profile.bio = row.bio
                 if let avatar = row.avatarUrl { profile.avatarURL = avatar }
                 // Stats only ever increase — keep the higher value between local and cloud
@@ -957,16 +1003,12 @@ final class SupabaseService: Sendable {
             let displayName = userRow?.displayName
                 ?? supabaseUser?.userMetadata["full_name"]?.stringValue
                 ?? "Student"
-            let email = userRow?.email
-                ?? supabaseUser?.email
-                ?? ""
             let bio = userRow?.bio ?? ""
             let avatarURL = userRow?.avatarUrl
                 ?? supabaseUser?.userMetadata["avatar_url"]?.stringValue
             
             let profile = UserProfile(
                 displayName: displayName,
-                email: email,
                 firebaseUID: uid,
                 username: userRow?.username,
                 avatarURL: avatarURL,

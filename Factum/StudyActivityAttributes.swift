@@ -17,5 +17,9 @@ struct StudySessionAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         let elapsedSeconds: Int
         let isPaused: Bool
+        /// The date corresponding to elapsed time zero, used by the widget
+        /// to render a live-counting `Text(date, style: .timer)`.
+        /// Computed as: now − elapsedSeconds (adjusted for pauses).
+        let timerStartDate: Date?
     }
 }

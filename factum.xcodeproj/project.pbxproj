@@ -59,6 +59,7 @@
 		C1945A47300301F300B63D5D /* pigeon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = pigeon.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1945A56300301F300B63D5D /* factumn.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = factumn.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1945A60300301F300B63D5D /* we got strava but for studying type shiUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "we got strava but for studying type shiUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C1DF150A3079C1910001BB77 /* factumappExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = factumappExtension.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -135,6 +136,7 @@
 		C1945A3E300301F300B63D5D = {
 			isa = PBXGroup;
 			children = (
+				C1DF150A3079C1910001BB77 /* factumappExtension.entitlements */,
 				C1945A49300301F300B63D5D /* factum1 */,
 				C100D5803040C6A100DC9E2D /* factumapp */,
 				C100D57B3040C6A100DC9E2D /* Frameworks */,
@@ -382,6 +384,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = factumappExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9JFX47U37Y;
@@ -412,6 +415,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = factumappExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9JFX47U37Y;

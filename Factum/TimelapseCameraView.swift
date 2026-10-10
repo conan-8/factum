@@ -48,6 +48,7 @@ struct TimelapseCameraView: View {
     @Query(sort: \StudySubject.sortOrder) private var subjects: [StudySubject]
     @State private var captureManager = TimelapseCaptureManager()
     @State private var showPostCaption = false
+    @State private var hasUsedPunReroll = false
     @State private var exportedVideoURL: URL?
     @State private var thumbnailData: Data?
     @State private var phase: CameraPhase = .timerSetup
@@ -96,6 +97,10 @@ struct TimelapseCameraView: View {
     @State private var showAddSubject = false
     @State private var showSetupSubjectPicker = false
     
+    // Carrier Pigeon mode
+    @State private var selectedCity: String = ""
+    @State private var availableFlights: [PigeonFlight] = []
+    
     // Camera tutorial state
     @State private var showCameraTutorialOverlay = false
     @State private var subjectPickerFrame: CGRect = .zero
@@ -136,6 +141,9 @@ struct TimelapseCameraView: View {
                     await setupCamera()
                     // Request notification permission for study reminders
                     try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                    // Check for a backgrounded session snapshot — if one exists, the app
+                    // was killed during a backgrounded study session and we should resume.
+                    resumeBackgroundedSessionIfNeeded()
                 }
                 .onDisappear { handleDisappear() }
                 .onChange(of: phase) { _, newPhase in handlePhaseChange(newPhase) }
@@ -169,6 +177,81 @@ struct TimelapseCameraView: View {
     private func setupCamera() async {
         await captureManager.requestPermissionAndSetup()
         captureManager.startOrientationDetection()
+    }
+    
+    /// Detects a backgrounded session snapshot (from a previous app launch where
+    /// the system killed the process while the session was in background) and
+    /// resumes the study timer. Video recording restarts fresh, but the elapsed
+    /// time is carried forward so no study time is lost.
+    private func resumeBackgroundedSessionIfNeeded() {
+        guard let snapshot = SessionSnapshot.load(),
+              snapshot.wasBackgrounded == true else { return }
+        
+        // Restore session state from the snapshot
+        captureManager.currentSubject = snapshot.currentSubject
+        
+        if let mode = TimerMode(rawValue: snapshot.timerMode) {
+            captureManager.timerMode = mode
+        }
+        
+        // Calculate total elapsed time including time since the snapshot was saved
+        let secondsSinceSnapshot = Int(Date().timeIntervalSince(snapshot.savedAt))
+        let totalElapsed = snapshot.elapsedSeconds + secondsSinceSnapshot
+        
+        // Determine recording mode based on whether raw video existed
+        let isTimelapse = snapshot.rawVideoFileName != nil
+        
+        if isTimelapse {
+            // Resume as timelapse — start fresh video recording but carry forward time
+            captureManager.recordingMode = .timelapse
+            captureManager.startRecording()
+        } else {
+            // Resume as photo timer — timer only, no video
+            captureManager.recordingMode = .photoTimer
+            captureManager.startTimerOnly()
+        }
+        
+        // Override the elapsed time with the carried-forward value
+        captureManager.elapsedBeforeCurrentStart = totalElapsed
+        captureManager.elapsedSeconds = totalElapsed
+        
+        // Restore break seconds
+        captureManager.totalBreakSeconds = snapshot.totalBreakSeconds
+        
+        // Handle timer-specific state based on total elapsed
+        switch captureManager.timerMode {
+        case .setTime:
+            let originalDuration = totalElapsed + snapshot.totalBreakSeconds
+            // We don't have the original set time, so estimate from elapsed
+            // The countdown would have been at (original - elapsed).
+            // Since we can't recover the original set time exactly, just
+            // continue in continuous mode.
+            captureManager.timerMode = .continuous
+        case .carrierPigeon:
+            if let actualSeconds = snapshot.pigeonActualSeconds {
+                captureManager.countdownSecondsRemaining = max(0, actualSeconds - totalElapsed)
+                if actualSeconds > 0 {
+                    captureManager.pigeonProgress = min(1.0, Double(totalElapsed) / Double(actualSeconds))
+                }
+            }
+        case .pomodoro, .continuous:
+            break
+        }
+        
+        // Jump straight to the active recording/timer phase
+        phase = isTimelapse ? .recording : .timerRunning
+        
+        // Clear the backgrounded snapshot — the session is now active again
+        SessionSnapshot.clear()
+        
+        // End any lingering Live Activity from the previous launch
+        Task {
+            for activity in Activity<StudySessionAttributes>.activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+        
+        print("[RESUME] Resumed backgrounded session: \(snapshot.currentSubject), \(totalElapsed)s elapsed")
     }
     
     private func handleDisappear() {
@@ -233,13 +316,10 @@ struct TimelapseCameraView: View {
             wasPhoneCall = callObserver.calls.contains { !$0.hasEnded }
             lastResignDate = Date()
             
-            if lockMode || phase == .recording {
-                // End session when leaving the app:
-                //  - Always for lock mode (both camera & photo-timer)
-                //  - Always for timelapse recording (camera) since the
-                //    capture session can't run in the background
-                // Request background time so the export can finish before
-                // the system suspends the process.
+            if lockMode {
+                // Lock mode: end session immediately when leaving the app
+                // (both camera & photo-timer). Request background time so the
+                // export can finish before the system suspends the process.
                 captureManager.handleEnterBackground()
                 cancelDimTimer()
                 restoreBrightness()
@@ -250,6 +330,10 @@ struct TimelapseCameraView: View {
                     exportAndProceed()
                 }
             } else {
+                // No lock mode: keep the session alive. The capture manager
+                // will cleanly stop the current movie segment and start a
+                // new one when the app returns to foreground. The timer
+                // continues counting using wall-clock time.
                 captureManager.handleEnterBackground()
                 // Show timer on Dynamic Island while the session continues in background
                 startLiveActivity()
@@ -382,6 +466,9 @@ struct TimelapseCameraView: View {
             subjectSegments: captureManager.finalizedSegments(),
             appLeaveCount: appLeaveCount,
             offTaskSeconds: totalOffTaskSeconds,
+            pigeonOrigin: captureManager.selectedFlight?.origin.name,
+            pigeonDestination: captureManager.selectedFlight?.destination.name,
+            hasUsedPunReroll: $hasUsedPunReroll,
             onComplete: {
                 showPostCaption = false
                 captureManager.cleanup()
@@ -490,10 +577,8 @@ struct TimelapseCameraView: View {
             .padding(.horizontal, 20)
             .padding(.top, 16)
             
-            Spacer(minLength: 8)
-            
-            // Recording mode + timer selection
-            VStack(spacing: 16) {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 16) {
                 // Recording mode toggle — custom styled
                 HStack(spacing: 8) {
                     recordingModeButton(mode: .timelapse, label: "Timelapse")
@@ -532,8 +617,6 @@ struct TimelapseCameraView: View {
                 .animation(.easeInOut(duration: 0.2), value: captureManager.detectedOrientation.isLandscape)
                 .padding(.top, 4)
             }
-            
-            Spacer(minLength: 16)
             
             // Timer options (only for Timer mode)
             if captureManager.recordingMode == .photoTimer {
@@ -601,6 +684,7 @@ struct TimelapseCameraView: View {
                 if captureManager.timerMode == .setTime {
                     captureManager.setTimeDurationMinutes = customHours * 60 + customMinutes
                 }
+                // Carrier pigeon flight is already set via selectedFlight
                 withAnimation(.easeInOut(duration: 0.3)) {
                     if captureManager.recordingMode == .photoTimer {
                         if photoBefore {
@@ -624,8 +708,11 @@ struct TimelapseCameraView: View {
                     .background(PigeonTheme.accent)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             }
+            .disabled(captureManager.timerMode == .carrierPigeon && captureManager.selectedFlight == nil)
+            .opacity(captureManager.timerMode == .carrierPigeon && captureManager.selectedFlight == nil ? 0.4 : 1.0)
             .padding(.horizontal, 24)
             .padding(.bottom, 50)
+            }  // end ScrollView
         }
     }
     
@@ -679,6 +766,7 @@ struct TimelapseCameraView: View {
         case .continuous: return "Record until you stop"
         case .pomodoro: return "25min study / 5min break cycles"
         case .setTime: return "Set a fixed duration"
+        case .carrierPigeon: return "Fly between real landmarks"
         }
     }
     
@@ -802,6 +890,159 @@ struct TimelapseCameraView: View {
             .padding(16)
             .background(PigeonTheme.surfaceBackground)
             .clipShape(RoundedRectangle(cornerRadius: 14))
+            
+        case .carrierPigeon:
+            carrierPigeonSettings
+        }
+    }
+    
+    // MARK: - Carrier Pigeon Settings
+    
+    private var carrierPigeonSettings: some View {
+        VStack(spacing: 12) {
+            if selectedCity.isEmpty {
+                // City picker
+                VStack(spacing: 10) {
+                    Text("CHOOSE YOUR CITY")
+                        .font(.system(size: 10, weight: .regular, design: .serif))
+                        .tracking(3)
+                        .foregroundStyle(PigeonTheme.tertiaryText)
+                    
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        ForEach(CarrierPigeonService.availableCities, id: \.self) { city in
+                            Button {
+                                Haptics.light()
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedCity = city
+                                    availableFlights = CarrierPigeonService.generateFlights(for: city)
+                                }
+                            } label: {
+                                Text(city)
+                                    .font(PigeonTheme.font(14, weight: .semibold))
+                                    .foregroundStyle(PigeonTheme.primaryText)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(PigeonTheme.cardBackground)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Departure board
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DEPARTURES")
+                            .font(.system(size: 10, weight: .regular, design: .serif))
+                            .tracking(3)
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                        Text(selectedCity)
+                            .font(PigeonTheme.font(13, weight: .semibold))
+                            .foregroundStyle(PigeonTheme.secondaryText)
+                    }
+                    Spacer()
+                    HStack(spacing: 12) {
+                        // Change city
+                        Button {
+                            Haptics.light()
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                selectedCity = ""
+                                availableFlights = []
+                                captureManager.selectedFlight = nil
+                            }
+                        } label: {
+                            Image(systemName: "globe")
+                                .font(.system(size: 14))
+                                .foregroundStyle(PigeonTheme.secondaryText)
+                        }
+                        // Refresh flights
+                        Button {
+                            Haptics.light()
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                availableFlights = CarrierPigeonService.generateFlights(for: selectedCity)
+                                captureManager.selectedFlight = nil
+                            }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 14))
+                                .foregroundStyle(PigeonTheme.secondaryText)
+                        }
+                    }
+                }
+                
+                if availableFlights.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "bird")
+                            .font(.system(size: 28))
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                        Text("No flights available for this city")
+                            .font(PigeonTheme.captionFont)
+                            .foregroundStyle(PigeonTheme.secondaryText)
+                    }
+                    .padding(.vertical, 16)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(availableFlights) { flight in
+                                pigeonFlightRow(flight)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 280)
+                }
+            }
+        }
+        .padding(16)
+        .background(PigeonTheme.surfaceBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+    
+    private func pigeonFlightRow(_ flight: PigeonFlight) -> some View {
+        let isSelected = captureManager.selectedFlight?.id == flight.id
+        
+        return Button {
+            Haptics.light()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                captureManager.selectedFlight = flight
+            }
+            MapCacheService.prewarmCache(for: flight)
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(flight.routeLabel)
+                        .font(PigeonTheme.font(14, weight: .semibold))
+                        .foregroundStyle(PigeonTheme.primaryText)
+                        .lineLimit(1)
+                    
+                    HStack(spacing: 8) {
+                        Text(flight.estimatedTimeFormatted)
+                            .font(.system(size: 12, weight: .light, design: .serif))
+                            .foregroundStyle(PigeonTheme.secondaryText)
+                        
+                        Text("·")
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                        
+                        Text(flight.distanceFormatted)
+                            .font(.system(size: 11, weight: .light, design: .serif))
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                    }
+                }
+                
+                Spacer()
+                
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(PigeonTheme.accent)
+                }
+            }
+            .padding(12)
+            .background(isSelected ? PigeonTheme.accent.opacity(0.15) : PigeonTheme.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(isSelected ? PigeonTheme.accent : .clear, lineWidth: 1.5)
+            )
         }
     }
     
@@ -986,6 +1227,11 @@ struct TimelapseCameraView: View {
                 return m > 0 ? "Set Time: \(h)h \(m)m" : "Set Time: \(h)h"
             }
             return "Set Time: \(total)m"
+        case .carrierPigeon:
+            if let flight = captureManager.selectedFlight {
+                return "\(flight.origin.name) → \(flight.destination.name)"
+            }
+            return "Carrier Pigeon"
         }
     }
     
@@ -1170,6 +1416,30 @@ struct TimelapseCameraView: View {
                     .tracking(1)
                     .foregroundStyle(.white.opacity(0.3))
             }
+            
+        case .carrierPigeon:
+            if let flight = captureManager.selectedFlight {
+                VStack(spacing: 6) {
+                    // Live flight map
+                    PigeonFlightMapView(
+                        flight: flight,
+                        progress: captureManager.pigeonProgress,
+                        style: .camera
+                    )
+                    .frame(width: 200)
+                    
+                    // Route label
+                    Text("\(flight.origin.name) → \(flight.destination.name)")
+                        .font(.system(size: 11, weight: .light, design: .serif))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                    
+                    // Estimated countdown
+                    Text("est ~\(formatTime(max(0, captureManager.countdownSecondsRemaining)))")
+                        .font(.system(size: 18, weight: .light, design: .serif))
+                        .foregroundStyle(captureManager.countdownSecondsRemaining < 60 ? .orange : .white.opacity(0.7))
+                }
+            }
         }
     }
     
@@ -1188,6 +1458,10 @@ struct TimelapseCameraView: View {
         let totalSeconds = captureManager.setTimeDurationMinutes * 60
         guard totalSeconds > 0 else { return 0 }
         return Double(captureManager.elapsedSeconds) / Double(totalSeconds)
+    }
+    
+    private var pigeonProgress: Double {
+        captureManager.pigeonProgress
     }
     
     @ViewBuilder
@@ -1300,6 +1574,43 @@ struct TimelapseCameraView: View {
                         .font(.system(size: 14, weight: .light, design: .serif))
                         .foregroundStyle(.white.opacity(0.4))
                         .tracking(1)
+                }
+                
+            case .carrierPigeon:
+                if let flight = captureManager.selectedFlight {
+                    VStack(spacing: 8) {
+                        // Origin label
+                        Text(flight.origin.name.uppercased())
+                            .font(.system(size: 10, weight: .regular, design: .serif))
+                            .tracking(3)
+                            .foregroundStyle(.white.opacity(0.5))
+                        
+                        // Large countdown with "est ~" prefix
+                        Text("est ~\(formatTime(max(0, captureManager.countdownSecondsRemaining)))")
+                            .font(.system(size: 48, weight: .ultraLight, design: .serif))
+                            .foregroundStyle(captureManager.countdownSecondsRemaining < 60 ? .orange : .white)
+                            .tracking(2)
+                        
+                        // Live flight map
+                        PigeonFlightMapView(
+                            flight: flight,
+                            progress: captureManager.pigeonProgress,
+                            style: .camera
+                        )
+                        .frame(width: 280)
+                        
+                        // Destination label
+                        Text(flight.destination.name.uppercased())
+                            .font(.system(size: 10, weight: .regular, design: .serif))
+                            .tracking(3)
+                            .foregroundStyle(.white.opacity(0.5))
+                        
+                        // Elapsed time
+                        Text(formatTime(captureManager.elapsedSeconds))
+                            .font(.system(size: 14, weight: .light, design: .serif))
+                            .foregroundStyle(.white.opacity(0.4))
+                            .tracking(1)
+                    }
                 }
             }
         }
@@ -1793,6 +2104,43 @@ struct TimelapseCameraView: View {
                         .font(.system(size: 14, weight: .light, design: .serif))
                         .foregroundStyle(PigeonTheme.secondaryText)
                         .tracking(1)
+                }
+                
+            case .carrierPigeon:
+                if let flight = captureManager.selectedFlight {
+                    VStack(spacing: 8) {
+                        // Origin label
+                        Text(flight.origin.name.uppercased())
+                            .font(.system(size: 10, weight: .regular, design: .serif))
+                            .tracking(3)
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                        
+                        // Large countdown with "est ~" prefix
+                        Text("est ~\(formatTime(max(0, captureManager.countdownSecondsRemaining)))")
+                            .font(.system(size: 48, weight: .ultraLight, design: .serif))
+                            .foregroundStyle(captureManager.countdownSecondsRemaining < 60 ? .orange : PigeonTheme.primaryText)
+                            .tracking(2)
+                        
+                        // Live flight map
+                        PigeonFlightMapView(
+                            flight: flight,
+                            progress: captureManager.pigeonProgress,
+                            style: .themed
+                        )
+                        .frame(width: 300)
+                        
+                        // Destination label
+                        Text(flight.destination.name.uppercased())
+                            .font(.system(size: 10, weight: .regular, design: .serif))
+                            .tracking(3)
+                            .foregroundStyle(PigeonTheme.tertiaryText)
+                        
+                        // Elapsed time
+                        Text(formatTime(captureManager.elapsedSeconds))
+                            .font(.system(size: 14, weight: .light, design: .serif))
+                            .foregroundStyle(PigeonTheme.secondaryText)
+                            .tracking(1)
+                    }
                 }
             }
         }
@@ -2334,13 +2682,18 @@ struct TimelapseCameraView: View {
     
     private func startLiveActivity() {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        let now = Date()
         let attributes = StudySessionAttributes(
             subject: captureManager.currentSubject,
-            startDate: Date().addingTimeInterval(-Double(captureManager.elapsedSeconds))
+            startDate: now.addingTimeInterval(-Double(captureManager.elapsedSeconds))
         )
+        // timerStartDate = now minus elapsed seconds, so the system timer
+        // counts up from the correct value without needing push updates.
+        let timerStart = now.addingTimeInterval(-Double(captureManager.elapsedSeconds))
         let state = StudySessionAttributes.ContentState(
             elapsedSeconds: captureManager.elapsedSeconds,
-            isPaused: captureManager.isPaused
+            isPaused: captureManager.isPaused,
+            timerStartDate: captureManager.isPaused ? nil : timerStart
         )
         do {
             studyActivity = try Activity.request(
@@ -2354,9 +2707,12 @@ struct TimelapseCameraView: View {
     
     private func updateLiveActivity() {
         guard let studyActivity else { return }
+        let now = Date()
+        let timerStart = now.addingTimeInterval(-Double(captureManager.elapsedSeconds))
         let state = StudySessionAttributes.ContentState(
             elapsedSeconds: captureManager.elapsedSeconds,
-            isPaused: captureManager.isPaused
+            isPaused: captureManager.isPaused,
+            timerStartDate: captureManager.isPaused ? nil : timerStart
         )
         Task {
             await studyActivity.update(.init(state: state, staleDate: nil))
@@ -2367,7 +2723,8 @@ struct TimelapseCameraView: View {
         guard let studyActivity else { return }
         let finalState = StudySessionAttributes.ContentState(
             elapsedSeconds: captureManager.elapsedSeconds,
-            isPaused: false
+            isPaused: false,
+            timerStartDate: nil
         )
         Task {
             await studyActivity.end(.init(state: finalState, staleDate: nil), dismissalPolicy: .immediate)
